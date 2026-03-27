@@ -29,11 +29,8 @@ pub enum LdapChange {
   Replace { attr: String, values: Vec<String> },
 }
 
-/// Converts a `LdapDiff` into ordered `RunbookStep`s.
-///
-/// The base order for all LDAP steps is 0; the dn-depth tiebreaker is encoded
-/// by the position within the slice (the caller sorts by order, not by slice
-/// position, so this is purely for display grouping today).
+/// Converts a `LdapDiff` into `RunbookStep`s in the natural output order of
+/// the diff (adds, then modifies, then deletes).
 pub fn to_runbook_steps(
   diff: &LdapDiff,
   config: &ResolvedLdapConfig,
@@ -48,7 +45,6 @@ pub fn to_runbook_steps(
     };
     let body = ldif_add(dn, attrs);
     steps.push(RunbookStep {
-      order: 0,
       description: format!("add {}", dn),
       command: format!("ldapadd {}", connect_args),
       body: Some(body),
@@ -76,7 +72,6 @@ pub fn to_runbook_steps(
     };
     let body = ldif_modify(dn, &changes);
     steps.push(RunbookStep {
-      order: 0,
       description: format!("modify {}", dn),
       command: format!("ldapmodify {}", connect_args),
       body: Some(body),
@@ -87,7 +82,6 @@ pub fn to_runbook_steps(
   for dn in &diff.to_delete {
     let operation = LdapOperation::Delete { dn: dn.clone() };
     steps.push(RunbookStep {
-      order: 0,
       description: format!("delete {}", dn),
       command: format!("ldapdelete {} \"{}\"", connect_args, dn),
       body: None,

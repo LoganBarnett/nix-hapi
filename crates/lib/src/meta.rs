@@ -17,11 +17,12 @@ pub struct NixHapiMeta {
   #[serde(default)]
   pub ignore: Vec<String>,
 
-  /// Execution order for cross-provider sequencing.  Steps with equal order
-  /// may eventually run concurrently; lower order runs before higher.
-  /// Defaults to 0 when absent.
+  /// jq expressions that each evaluate to a provider-instance subtree that
+  /// must be fully applied before this instance begins.  The expressions are
+  /// evaluated against the complete top-level JSON blob, so cross-provider
+  /// references work naturally.
   #[serde(default)]
-  pub order: u32,
+  pub depends_on: Vec<String>,
   // listFilter: reserved for next phase
 }
 

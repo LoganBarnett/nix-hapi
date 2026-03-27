@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/cli",
+    "crates/fake",
     "crates/ldap",
     "crates/lib",
 ]
@@ -45,10 +46,16 @@ ldap3 = "0.11"
 # Pattern matching for __nixhapi.ignore
 regex = "1"
 
+# jq expression evaluation for dependsOn DAG resolution
+jaq-core = "2"
+jaq-std = "2"
+jaq-json = { version = "1", features = ["serde_json"] }
+
 # Testing
 tempfile = "3"
 
 # Crates in this workspace
+nix-hapi-fake = { path = "crates/fake" }
 nix-hapi-lib = { path = "crates/lib" }
 nix-hapi-ldap = { path = "crates/ldap" }
 

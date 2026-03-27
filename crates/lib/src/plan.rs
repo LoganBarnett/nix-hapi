@@ -52,10 +52,6 @@ pub struct FieldDiff {
 /// A single step in the execution runbook.
 #[derive(Debug)]
 pub struct RunbookStep {
-  /// Execution order.  Steps with lower order run before steps with higher
-  /// order.  Steps with equal order may eventually run concurrently.
-  pub order: u32,
-
   /// Human-readable label shown in plan output.
   pub description: String,
 
@@ -88,18 +84,15 @@ pub struct Plan {
 
 impl Plan {
   /// All runbook steps across all providers, in execution order.
-  pub fn ordered_steps(&self) -> Vec<(&RunbookStep, &str)> {
-    let mut steps: Vec<(&RunbookStep, &str)> = self
-      .provider_plans
-      .iter()
-      .flat_map(|pp| {
-        pp.runbook
-          .iter()
-          .map(move |step| (step, pp.instance_name.as_str()))
-      })
-      .collect();
-    steps.sort_by_key(|(step, _)| step.order);
-    steps
+  ///
+  /// Provider plans are already stored in topological dependency order, so
+  /// this simply flattens them without additional sorting.
+  pub fn ordered_steps(&self) -> impl Iterator<Item = (&RunbookStep, &str)> {
+    self.provider_plans.iter().flat_map(|pp| {
+      pp.runbook
+        .iter()
+        .map(move |step| (step, pp.instance_name.as_str()))
+    })
   }
 
   pub fn is_empty(&self) -> bool {

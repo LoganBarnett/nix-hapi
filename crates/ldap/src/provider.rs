@@ -84,11 +84,7 @@ impl Provider for LdapProvider {
     let mut ldap = connect(&ldap_config)?;
     let mut report = ApplyReport::default();
 
-    // Execute runbook steps in order.
-    let mut steps = plan.runbook.iter().collect::<Vec<_>>();
-    steps.sort_by_key(|s| s.order);
-
-    for step in steps {
+    for step in &plan.runbook {
       let op: LdapOperation = serde_json::from_value(step.operation.clone())
         .map_err(|e| {
           ProviderError::OperationFailed(format!(

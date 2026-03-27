@@ -104,6 +104,35 @@ deletion.  Exemptions are declared explicitly:
 __nixhapi.ignore = [ "_acme-challenge\\..*" ];
 #+end_src
 
+** Cross-provider dependencies and parallel execution
+
+Provider instances that are independent of one another execute concurrently.
+Instances that declare a dependency on another instance wait for that instance
+to finish before they begin.  The reconciler groups all instances into
+sequential /waves/ using a topological sort (Kahn's algorithm), then runs
+every instance within a wave in parallel:
+
+#+begin_src
+wave 0 │  prod-ldap     prod-dns     ← no dependencies; run in parallel
+       │       │              │
+wave 1 │  prod-gitea   prod-vault    ← both depend on wave-0 instances
+       │        \         /
+wave 2 │         prod-app            ← depends on both wave-1 instances
+#+end_src
+
+Dependencies are declared with ~__nixhapi.dependsOn~, a list of jq expressions
+evaluated against the full top-level JSON blob.  Each expression must resolve
+to the scope of the depended-upon instance:
+
+#+begin_src nix :exports code
+prod-gitea.__nixhapi.dependsOn = [ ".prod-ldap" ];
+prod-app.__nixhapi.dependsOn   = [ ".prod-gitea" ".prod-vault" ];
+#+end_src
+
+Because the expressions are jq paths into the Nix-generated JSON, the Nix
+layer can compute them from ordinary attribute references — no hard-coded
+instance names are required in application code.
+
 ** Pre-apply assertions
 
 Assertions are declared in the Nix expression and evaluated against the

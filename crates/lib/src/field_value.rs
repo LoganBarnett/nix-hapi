@@ -23,7 +23,7 @@ pub enum FieldValueError {
 
 /// How a field value is managed and where its value comes from.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "kebab-case")]
+#[serde(tag = "__nixhapi", rename_all = "kebab-case")]
 pub enum FieldValue {
   /// Always enforce this exact value on every reconciliation.
   Managed { value: String },

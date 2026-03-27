@@ -5,9 +5,11 @@ use clap::{Parser, Subcommand};
 use config::{CliRaw, Config, ConfigError};
 use logging::init_logging;
 use nix_hapi_ldap::LdapProvider;
-use nix_hapi_lib::meta::{NixHapiMeta, ProviderSpec};
-use nix_hapi_lib::plan::{ApplyReport, Plan, ProviderPlan, ResourceChange};
-use nix_hapi_lib::provider::{resolve_config, Provider, ProviderError};
+use nix_hapi_lib::executor::{
+  execute_apply_waves, execute_plan_waves, ExecuteError,
+};
+use nix_hapi_lib::plan::{ApplyReport, ProviderPlan, ResourceChange};
+use nix_hapi_lib::provider::Provider;
 use std::collections::HashMap;
 use std::io::Read;
 use thiserror::Error;
@@ -23,21 +25,8 @@ enum ApplicationError {
   #[error("Failed to parse desired state JSON: {0}")]
   JsonParse(#[from] serde_json::Error),
 
-  #[error("Provider error for instance {instance:?}: {source}")]
-  Provider {
-    instance: String,
-    #[source]
-    source: ProviderError,
-  },
-
-  #[error("Unknown provider type {provider_type:?} for instance {instance:?}")]
-  UnknownProvider {
-    instance: String,
-    provider_type: String,
-  },
-
-  #[error("Instance {instance:?} is missing a __nixhapi.provider declaration")]
-  MissingProvider { instance: String },
+  #[error("{0}")]
+  Execute(#[from] ExecuteError),
 }
 
 #[derive(Debug, Parser)]
@@ -85,7 +74,7 @@ fn main() -> Result<(), ApplicationError> {
 fn run_plan(
   top_level: &HashMap<String, serde_json::Value>,
 ) -> Result<(), ApplicationError> {
-  let plan = build_plan(top_level)?;
+  let plan = execute_plan_waves(top_level, resolve_provider_fn)?;
 
   if plan.is_empty() {
     println!("No changes.");
@@ -100,7 +89,7 @@ fn run_plan(
   println!("--- Runbook (in execution order) ---");
   println!();
   for (step, instance) in plan.ordered_steps() {
-    println!("[{}] {} ({})", step.order, step.description, instance);
+    println!("{} ({})", step.description, instance);
     println!("  {}", step.command);
     if let Some(body) = &step.body {
       for line in body.lines() {
@@ -116,119 +105,32 @@ fn run_plan(
 fn run_apply(
   top_level: &HashMap<String, serde_json::Value>,
 ) -> Result<(), ApplicationError> {
-  let plan = build_plan(top_level)?;
+  let reports = execute_apply_waves(top_level, resolve_provider_fn)?;
 
-  if plan.is_empty() {
+  let any_changes = reports.iter().any(|(_, r)| {
+    !r.created.is_empty() || !r.modified.is_empty() || !r.deleted.is_empty()
+  });
+
+  if !any_changes {
     println!("No changes.");
     return Ok(());
   }
 
-  // Apply provider plans in the order their runbook steps dictate.
-  // For Phase 1 (single provider), this is straightforward.
-  for pp in &plan.provider_plans {
-    let (meta, _data) = split_scope(
-      top_level
-        .get(&pp.instance_name)
-        .expect("instance must exist"),
-    );
-    let spec = meta.provider.as_ref().expect("provider must be set");
-    let config = resolve_config(&spec.config).map_err(|source| {
-      ApplicationError::Provider {
-        instance: pp.instance_name.clone(),
-        source,
-      }
-    })?;
-    let provider = resolve_provider(&pp.instance_name, spec)?;
-
-    let report = provider.apply(pp, &config).map_err(|source| {
-      ApplicationError::Provider {
-        instance: pp.instance_name.clone(),
-        source,
-      }
-    })?;
-
-    print_apply_report(&pp.instance_name, &report);
+  for (instance, report) in &reports {
+    print_apply_report(instance, report);
   }
 
   Ok(())
 }
 
-fn build_plan(
-  top_level: &HashMap<String, serde_json::Value>,
-) -> Result<Plan, ApplicationError> {
-  let mut plan = Plan::default();
-
-  for (instance_name, scope_value) in top_level {
-    let (meta, data) = split_scope(scope_value);
-
-    let spec = meta.provider.as_ref().ok_or_else(|| {
-      ApplicationError::MissingProvider {
-        instance: instance_name.clone(),
-      }
-    })?;
-
-    let config = resolve_config(&spec.config).map_err(|source| {
-      ApplicationError::Provider {
-        instance: instance_name.clone(),
-        source,
-      }
-    })?;
-
-    let provider = resolve_provider(instance_name, spec)?;
-
-    let live = provider.list_live(&config, &[]).map_err(|source| {
-      ApplicationError::Provider {
-        instance: instance_name.clone(),
-        source,
-      }
-    })?;
-
-    let mut pp =
-      provider
-        .plan(&data, &live, &meta, &config)
-        .map_err(|source| ApplicationError::Provider {
-          instance: instance_name.clone(),
-          source,
-        })?;
-
-    pp.instance_name = instance_name.clone();
-    plan.provider_plans.push(pp);
-  }
-
-  Ok(plan)
-}
-
-/// Splits a top-level scope value into its `__nixhapi` metadata and the
-/// remaining data subtree that the provider receives.
-fn split_scope(scope: &serde_json::Value) -> (NixHapiMeta, serde_json::Value) {
-  let meta: NixHapiMeta = scope
-    .get("__nixhapi")
-    .and_then(|v| serde_json::from_value(v.clone()).ok())
-    .unwrap_or_default();
-
-  let data = match scope.as_object() {
-    Some(obj) => {
-      let filtered: serde_json::Map<String, serde_json::Value> = obj
-        .iter()
-        .filter(|(k, _)| k.as_str() != "__nixhapi")
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-      serde_json::Value::Object(filtered)
-    }
-    None => serde_json::Value::Null,
-  };
-
-  (meta, data)
-}
-
-/// Returns a boxed provider for the given spec, or an error for unknown types.
-fn resolve_provider(
+/// Returns a boxed provider for the given type, or an error for unknown types.
+fn resolve_provider_fn(
   instance: &str,
-  spec: &ProviderSpec,
-) -> Result<Box<dyn Provider>, ApplicationError> {
-  match spec.provider_type.as_str() {
+  provider_type: &str,
+) -> Result<Box<dyn Provider>, ExecuteError> {
+  match provider_type {
     "ldap" => Ok(Box::new(LdapProvider)),
-    other => Err(ApplicationError::UnknownProvider {
+    other => Err(ExecuteError::ProviderLookup {
       instance: instance.to_string(),
       provider_type: other.to_string(),
     }),
