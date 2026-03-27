@@ -1,0 +1,6 @@
+# Example configuration file for nix-hapi.
+# Copy this file to config.toml and customize as needed.
+
+# Logging configuration.
+log_level = "info"  # Options: trace, debug, info, warn, error
+log_format = "text"  # Options: text, json

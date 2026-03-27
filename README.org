@@ -1,0 +1,159 @@
+#+title:     nix-hapi
+#+author:    Logan Barnett
+#+email:     logustus@gmail.com
+#+date:      <2026-03-27 Thu>
+#+language:  en
+
+* Introduction
+
+nix-hapi ("Nix happy API") is a declarative reconciler for HTTP APIs.  It
+lets you describe the desired state of external services — DNS records, Git
+forges, identity providers, secret managers, and similar — as pure Nix
+expressions, then reconciles the live API state to match.
+
+The pipeline is intentionally simple:
+
+#+begin_src
+Nix expressions (desired state)
+    ↓  nix eval --json
+JSON blob
+    ↓  nix-hapi apply
+Live API calls (per provider)
+#+end_src
+
+Nix is the configuration language.  A Rust binary is the reconciler.  There
+is no state file: the reconciler always queries live state and diffs against
+the expression.
+
+nix-hapi generalises the architecture first validated in
+[[https://gitea.proton/logan/ldap-reconciler][ldap-reconciler]] to arbitrary HTTP API providers.
+
+* Installation
+
+** From source
+
+Clone the repository and build with Cargo inside the Nix development shell:
+
+#+begin_src sh :exports code
+git clone ssh://git@gitea.proton:2222/logan/nix-hapi.git
+cd nix-hapi
+nix develop --command cargo build --release
+#+end_src
+
+The resulting binary is at ~target/release/nix-hapi~.
+
+** Via Nix flake
+
+#+begin_src sh :exports code
+nix run github:LoganBarnett/nix-hapi -- --help
+#+end_src
+
+* Usage
+
+** Plan mode
+
+Show what would change without touching anything:
+
+#+begin_src sh :exports code
+nix eval --json .#desiredState | nix-hapi plan
+#+end_src
+
+Plan output shows a human-readable diff of additions, modifications, and
+deletions that would be applied to each provider.
+
+** Apply
+
+Apply the desired state to the live APIs:
+
+#+begin_src sh :exports code
+nix eval --json .#desiredState | nix-hapi apply
+#+end_src
+
+** Field management semantics
+
+Fields are managed at the value level.  Every field carries one of three
+management markers:
+
+| Marker        | Behaviour                                                     |
+|---------------+---------------------------------------------------------------|
+| ~mkManaged~   | The reconciler always enforces this value (default).          |
+| ~mkInitial~   | Set once when absent; left alone after the first application. |
+| ~mkUnmanaged~ | Never touched; documents intentional non-ownership.           |
+
+A plain value is sugar for ~mkManaged~:
+
+#+begin_src nix :exports code
+description = "Service account for Gitea";
+description = mkManaged "Service account for Gitea";  # equivalent
+#+end_src
+
+Runtime-resolved values compose with any marker:
+
+#+begin_src nix :exports code
+userPassword = mkManaged (fromPath "/run/credentials/gitea.service/ldap-password");
+userPassword = mkInitial (fromPath "/run/credentials/alice.service/ldap-password");
+#+end_src
+
+** Ownership and exemptions
+
+nix-hapi assumes it owns everything within the declared scope.  Resources
+present in the live API but absent from the Nix expression are candidates for
+deletion.  Exemptions are declared explicitly:
+
+#+begin_src nix :exports code
+__nixhapi.ignore = [ "_acme-challenge\\..*" ];
+#+end_src
+
+** Pre-apply assertions
+
+Assertions are declared in the Nix expression and evaluated against the
+computed plan before any API call is made:
+
+#+begin_src nix :exports code
+__nixhapi.assertions = [
+  { message = "prod records must not be deleted";
+    noDestroy = [ "prod\\..*" ];
+  }
+];
+#+end_src
+
+* Gotchas and Tradeoffs
+
+- *No state file*: nix-hapi queries live state on every run.  Reconciliation
+  is always a full diff; there is no incremental tracking.
+
+- *Ownership is opt-out*: unknown resources within a managed scope are
+  deleted by default.  Use ~__nixhapi.ignore~ patterns to exempt resources
+  that are managed outside nix-hapi.
+
+- *~mkInitial~ is stateless*: the reconciler has no memory of whether it was
+  the one that set a field.  A field absent from the live API will be reset
+  to its initial value on the next run, regardless of why it became absent.
+
+- *Nix is the only input*: the desired state must be fully expressible as a
+  Nix value.  Runtime-resolved values (~fromPath~) are resolved by the
+  reconciler, not by Nix evaluation.
+
+* Contributing
+
+Run the test suite:
+
+#+begin_src sh :exports code
+nix develop --command cargo test --workspace
+#+end_src
+
+Format all files:
+
+#+begin_src sh :exports code
+nix develop --command treefmt
+#+end_src
+
+Commits must pass the pre-commit hook (installed automatically when entering
+the dev shell).  Commit inside the shell so ~rustfmt~ is available:
+
+#+begin_src sh :exports code
+nix develop --command git commit -m "your message"
+#+end_src
+
+Issues and patches: [[https://gitea.proton/logan/nix-hapi][gitea.proton/logan/nix-hapi]] (primary) or
+[[https://github.com/LoganBarnett/nix-hapi][github.com/LoganBarnett/nix-hapi]] (mirror).

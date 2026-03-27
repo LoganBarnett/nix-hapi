@@ -1,0 +1,271 @@
+#+title:     nix-hapi Overview
+#+author:    Logan Barnett
+#+date:      <2026-03-27 Thu>
+#+language:  en
+
+* The Problem
+
+Many services — DNS registrars, Git forges, identity providers, secret
+managers, monitoring platforms — expose their configuration exclusively
+through HTTP APIs.  Managing those APIs in a reproducible, auditable,
+and recoverable way is an unsolved problem for operators who want a
+fully declarative infrastructure.
+
+The failure mode is familiar: configuration drifts from what anyone
+thought was true, recovery from a catastrophic failure requires a
+playbook of manual steps, and there is no single source of truth that
+can be read without querying every service individually.
+
+The specific gaps this creates:
+
+- *No nuclear recovery*: rebuilding from scratch requires manual
+  intervention to recreate tokens, re-enter settings, and re-establish
+  relationships between services.
+- *No auditability*: the actual configuration of a service lives in a
+  web UI or an API response, not in version control.
+- *No drift detection*: if something changes out from under you — a
+  colleague edits a record, an automated process touches a field — you
+  have no way to know or recover automatically.
+
+* Why the Existing Ecosystem Doesn't Solve It
+
+** Terraform (and OpenTofu)
+
+Terraform is the dominant tool for declarative API management, and it
+is the closest thing to a general solution.  It falls short in
+several ways.
+
+*State file management*: Terraform is declarative but not stateless.
+It maintains a separate state file that records which resources it
+owns.  This file can drift from reality, requires its own management
+infrastructure (remote backends, locking), and must be manually edited
+to handle refactoring, imports, and drift recovery.  Learning to edit
+Terraform state files is an unavoidable skill for any serious Terraform
+user — a sign that the abstraction regularly leaks.
+
+*Cowardly ownership model*: Terraform ignores any resource it does not
+already know about.  If a resource exists in your account but not in
+the state file, Terraform neither manages it nor flags it — it simply
+pretends it is not there.  Full ownership semantics (everything in this
+scope is mine unless explicitly exempted) require a separate tool or
+manual import.  This is the right default inverted.
+
+*HCL*: Terraform's configuration language is a limited DSL.  It lacks
+the expressiveness of a real functional language: no higher-order
+functions, no module system with type-checked options, no ability to
+derive complex configurations from shared data.  HCL exists because
+Terraform predates the understanding that a real language would serve
+better.
+
+*Learning curve dependency*: Every practical Terraform tutorial begins
+with AWS infrastructure.  There is no meaningful way to learn Terraform
+without simultaneously learning the API surface of a cloud provider —
+an expensive, vendor-specific skill that has nothing to do with the
+tool itself.
+
+** NixOps / NixOps4
+
+NixOps (and its in-progress successor NixOps4) is a deployment tool
+for NixOS machines.  It uses the NixOS module system as its
+configuration language, which makes it architecturally interesting, but
+its scope is provisioning and configuring servers — not managing the
+APIs of services running on or around those servers.  NixOps4 aims to
+be more generic and has a provider interface in progress, but no
+provider exists today for DNS, Git forges, identity services, or any
+non-machine resource.  It also carries an OpenTofu integration that
+suggests it may not fully escape the Terraform state model for
+non-machine resources.
+
+** Domain-Specific Tools
+
+Tools like OctoDNS and DNSControl solve the DNS reconciliation problem
+well.  OctoDNS in particular has solid ownership semantics and a good
+provider ecosystem.  The NixOS-DNS project bridges the gap between Nix
+expressions and OctoDNS-compatible output.
+
+These tools stop at DNS.  There is no equivalent for GitHub
+organizations, LDAP directories, secret managers, monitoring
+configurations, or any of the other API surfaces an operator must
+manage.  Each requires a different tool with a different configuration
+language and different operational model.
+
+** Kubernetes Operators (Crossplane, Config Connector)
+
+The Kubernetes controller pattern — declare desired state, reconcile
+continuously against live state, no separate state file — is
+architecturally closest to the model nix-hapi is building toward.
+Crossplane and Config Connector extend this to cloud APIs.
+
+The problem is the prerequisite: you need a running Kubernetes cluster
+to run controllers.  Managing 20 DNS records or a handful of Git
+repositories does not justify the operational burden of a cluster.
+Trading "learn AWS" for "learn Kubernetes" is the same trap.
+
+* The nix-hapi Approach
+
+nix-hapi uses Nix as the configuration language and a Rust program as
+the reconciler.  The architecture is a clean two-phase pipeline:
+
+#+begin_src
+Nix expressions (desired state)
+    ↓  nix eval --json
+JSON blob
+    ↓  nix-hapi apply
+Live API calls (per provider)
+#+end_src
+
+Nix is pure: it cannot call APIs or read runtime state.  This is a
+feature.  The desired state is a pure function of the Nix expression —
+reproducible, auditable, version-controlled.  All I/O belongs to the
+reconciler.
+
+** Ownership by Default
+
+nix-hapi assumes it owns everything within the declared scope.
+Anything present in the live API but absent from the Nix expression is
+a candidate for deletion.  Exemptions are declared explicitly:
+
+#+begin_src nix
+__nixhapi.ignore = [ "_acme-challenge\\..*" ];
+#+end_src
+
+This is the correct default.  Silently ignoring unknown resources —
+Terraform's behaviour — makes it impossible to detect drift and
+impossible to enforce a clean state.
+
+** Field Management Semantics
+
+Fields are managed at the value level, not just the resource level.
+Three primitives cover all cases:
+
+- *Managed* (default): the reconciler always enforces this value.
+  Assigning a plain value is sugar for ~mkManaged~.
+
+  #+begin_src nix
+  description = "Service account for Gitea";
+  description = mkManaged "Service account for Gitea";  # equivalent
+  #+end_src
+
+- *Initial*: the value is set if the field is absent, then left alone
+  permanently.  The live value may drift freely after the first
+  reconciliation.
+
+  #+begin_src nix
+  loginShell = mkInitial "/bin/bash";
+  #+end_src
+
+- *Unmanaged*: the reconciler never touches this field.  The explicit
+  marker documents intentional non-ownership, as opposed to an
+  accidental omission.
+
+  #+begin_src nix
+  homeDirectory = mkUnmanaged;
+  #+end_src
+
+Runtime-resolved values (e.g. secrets from ~/run/credentials/~) are
+orthogonal to the management semantic and compose with any of the
+three:
+
+#+begin_src nix
+userPassword = mkManaged (fromPath "/run/credentials/gitea.service/ldap-password");
+userPassword = mkInitial (fromPath "/run/credentials/alice.service/ldap-password");
+#+end_src
+
+** The Meta Namespace
+
+Reconciler directives that are not part of the provider's API schema
+live under a reserved ~__nixhapi~ key.  The reconciler strips this
+before comparing against live state and uses it to modify reconciliation
+behaviour for the enclosing scope.  Examples of what lives here:
+
+- ~ignore~: regexp patterns exempting resources or fields from
+  management.
+- ~listFilter~: predicates filtering which list members are considered
+  owned.
+- Provider-specific hints.
+
+** Plan Mode and Pre-Apply Assertions
+
+Running ~nix-hapi plan~ shows exactly what would change before
+anything is applied — the same diff-before-apply workflow as
+Terraform.
+
+Pre-apply assertions go further: they are declared in the Nix
+expression itself and evaluated against the computed plan before any
+API call is made.  An assertion that certain resources must never appear
+in the destroy list gives hard safety guarantees for critical
+infrastructure.
+
+#+begin_src nix
+__nixhapi.assertions = [
+  { message = "prod records must not be deleted";
+    # evaluated by the reconciler against the plan
+    noDestroy = [ "prod\\..*" ];
+  }
+];
+#+end_src
+
+** No State File
+
+There is no state file.  The Nix expression is the source of truth.
+The reconciler always queries live state and diffs against the
+expression.  This eliminates an entire class of operational problems:
+state drift, state locking, state import ceremonies, and the manual
+state editing skill that Terraform operators must develop.
+
+* Prior Art and Learnings
+
+** ldap-reconciler
+
+The ldap-reconciler (~/dev/ldap-reconciler~) is a working
+proof-of-concept of this architecture scoped to OpenLDAP.  Its
+learnings directly inform nix-hapi:
+
+- The field management semantics (~static~, ~initial~, ~static-from-path~,
+  ~initial-from-path~) are the origin of nix-hapi's three-primitive
+  model.
+- The deliberate rejection of a sidecar state file for tracking
+  ~initial~ fields confirms that stateless reconciliation is practical.
+- The Nix → JSON → Rust reconciler pipeline is validated end-to-end.
+
+nix-hapi generalises this pattern to arbitrary providers rather than
+treating it as LDAP-specific.
+
+** kubernixos
+
+kubernixos (GitHub: DBCDK/kubernixos) implements the same pipeline
+scoped to Kubernetes: ~nix eval --json~ produces a desired state blob,
+a Go reconciler applies it against a live cluster, and resources
+labelled by the tool are pruned if absent from the closure.  It
+confirms the architecture is sound beyond the LDAP case.
+
+* Name
+
+~nix-hapi~ is a portmanteau of "Nix" and "hAPI" — the acronym API
+read phonetically ("ah-pee"), making the name sound like "happy."
+The implicit tagline: Nix is good enough to use for everything, and
+we are not ashamed.
+
+* Phase 1 Scope
+
+The first milestone establishes the core that everything else builds on:
+
+1. Generic reconciler binary in Rust that reads a provider-keyed JSON
+   blob and drives plan/apply cycles.
+2. Three field semantics (~mkManaged~, ~mkInitial~, ~mkUnmanaged~) and
+   runtime value sources (~fromPath~).
+3. The ~__nixhapi~ meta namespace for exemptions and assertions.
+4. Plan mode with human-readable diff output.
+5. Pre-apply assertion evaluation.
+6. At least one real provider (DNS via Porkbun, or LDAP rolled in from
+   ldap-reconciler) to validate the provider interface.
+
+Deferred to later phases:
+
+- Runtime value providers (e.g. fetching a WAN IP from an HTTP
+  endpoint and referencing it from multiple records).
+- ~mkOrder~ for DAG-based field and resource ordering within a
+  provider.
+- Interactive confirmation mode (confirm each change individually).
+- Continuous reconciliation daemon mode.
+- Metrics and observability.
