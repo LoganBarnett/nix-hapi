@@ -1,5 +1,5 @@
 [package]
-name = "nix-hapi-lib"
+name = "nix-hapi-ldap"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -8,11 +8,12 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-tracing = { workspace = true }
+nix-hapi-lib = { workspace = true }
+ldap3 = { workspace = true }
+tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tap = { workspace = true }  # For method chaining, reduces superfluous locals
-
-[dev-dependencies]
-cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
+regex = { workspace = true }
+tracing = { workspace = true }
+tap = { workspace = true }

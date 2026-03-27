@@ -27,30 +27,29 @@ pub enum ConfigError {
 }
 
 #[derive(Debug, Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(
+  author,
+  version,
+  about = "Declarative API reconciler driven by Nix expressions"
+)]
 pub struct CliRaw {
-  /// Log level (trace, debug, info, warn, error)
-  #[arg(long, env = "LOG_LEVEL")]
+  /// Log level (trace, debug, info, warn, error).
+  #[arg(long, env = "NIX_HAPI_LOG_LEVEL")]
   pub log_level: Option<String>,
 
-  /// Log format (text, json)
-  #[arg(long, env = "LOG_FORMAT")]
+  /// Log format (text, json).
+  #[arg(long, env = "NIX_HAPI_LOG_FORMAT")]
   pub log_format: Option<String>,
 
-  /// Path to configuration file
-  #[arg(short, long, env = "CONFIG_FILE")]
+  /// Path to the nix-hapi configuration file (TOML).
+  #[arg(short, long, env = "NIX_HAPI_CONFIG")]
   pub config: Option<PathBuf>,
-
-  /// Example: Name to greet
-  #[arg(short, long)]
-  pub name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
 pub struct ConfigFileRaw {
   pub log_level: Option<String>,
   pub log_format: Option<String>,
-  pub name: Option<String>,
 }
 
 impl ConfigFileRaw {
@@ -61,14 +60,10 @@ impl ConfigFileRaw {
         source,
       }
     })?;
-
-    let config: ConfigFileRaw =
-      toml::from_str(&contents).map_err(|source| ConfigError::Parse {
-        path: path.clone(),
-        source,
-      })?;
-
-    Ok(config)
+    toml::from_str(&contents).map_err(|source| ConfigError::Parse {
+      path: path.clone(),
+      source,
+    })
   }
 }
 
@@ -76,49 +71,38 @@ impl ConfigFileRaw {
 pub struct Config {
   pub log_level: LogLevel,
   pub log_format: LogFormat,
-  pub name: String,
 }
 
 impl Config {
   pub fn from_cli_and_file(cli: CliRaw) -> Result<Self, ConfigError> {
-    let config_file = if let Some(config_path) = &cli.config {
-      ConfigFileRaw::from_file(config_path)?
+    let config_file = if let Some(ref path) = cli.config {
+      ConfigFileRaw::from_file(path)?
     } else {
-      let default_config_path = PathBuf::from("config.toml");
-      if default_config_path.exists() {
-        ConfigFileRaw::from_file(&default_config_path)?
+      let default = PathBuf::from("config.toml");
+      if default.exists() {
+        ConfigFileRaw::from_file(&default)?
       } else {
         ConfigFileRaw::default()
       }
     };
 
-    let log_level_str = cli
+    let log_level = cli
       .log_level
       .or(config_file.log_level)
-      .unwrap_or_else(|| "info".to_string());
-
-    let log_level = log_level_str
+      .unwrap_or_else(|| "info".to_string())
       .parse::<LogLevel>()
       .map_err(|e| ConfigError::Validation(e.to_string()))?;
 
-    let log_format_str = cli
+    let log_format = cli
       .log_format
       .or(config_file.log_format)
-      .unwrap_or_else(|| "text".to_string());
-
-    let log_format = log_format_str
+      .unwrap_or_else(|| "text".to_string())
       .parse::<LogFormat>()
       .map_err(|e| ConfigError::Validation(e.to_string()))?;
-
-    let name = cli
-      .name
-      .or(config_file.name)
-      .unwrap_or_else(|| "World".to_string());
 
     Ok(Config {
       log_level,
       log_format,
-      name,
     })
   }
 }
