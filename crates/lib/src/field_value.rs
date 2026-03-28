@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -19,6 +20,12 @@ pub enum FieldValueError {
     #[source]
     source: std::env::VarError,
   },
+
+  #[error(
+    "DerivedFrom field cannot be resolved directly; \
+     the executor resolves it during reconciliation"
+  )]
+  DerivedFromNotResolved,
 }
 
 /// How a field value is managed and where its value comes from.
@@ -39,6 +46,16 @@ pub enum FieldValue {
   ManagedFromEnv { env: String },
   /// Read value from an environment variable; set once if absent.
   InitialFromEnv { env: String },
+  /// Computed at reconciliation time from declared input paths.
+  ///
+  /// The jq `expression` is evaluated with a `$inputs` object whose keys are
+  /// the aliases declared in `inputs` and whose values are the resolved values
+  /// at the corresponding absolute jq paths into the full desired-state blob.
+  /// The expression must return a `FieldValue`-shaped object.
+  DerivedFrom {
+    inputs: HashMap<String, String>,
+    expression: String,
+  },
 }
 
 impl FieldValue {
@@ -75,6 +92,9 @@ impl FieldValue {
           source,
         })
         .map(ResolvedFieldValue::Initial),
+      FieldValue::DerivedFrom { .. } => {
+        Err(FieldValueError::DerivedFromNotResolved)
+      }
     }
   }
 }

@@ -2,7 +2,6 @@ use nix_hapi_fake::{ApplyRecord, FakeProvider};
 use nix_hapi_lib::dag::execution_waves;
 use nix_hapi_lib::executor::{execute_apply_waves, ExecuteError};
 use serde_json::Value;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 // ── Test fixture ──────────────────────────────────────────────────────────────
@@ -19,7 +18,7 @@ use std::sync::{Arc, Mutex};
 ///
 /// Each instance uses the fake provider and will sleep for `delay_ms`
 /// milliseconds during apply.
-fn diamond_dag_json(delay_ms: u64) -> HashMap<String, Value> {
+fn diamond_dag_json(delay_ms: u64) -> Value {
   let scope = |depends_on: &[&str]| {
     serde_json::json!({
       "__nixhapi": {
@@ -32,12 +31,12 @@ fn diamond_dag_json(delay_ms: u64) -> HashMap<String, Value> {
     })
   };
 
-  let mut map = HashMap::new();
-  map.insert("a".to_string(), scope(&[]));
-  map.insert("b".to_string(), scope(&[".a"]));
-  map.insert("c".to_string(), scope(&[".a"]));
-  map.insert("d".to_string(), scope(&[".b", ".c"]));
-  map
+  serde_json::json!({
+    "a": scope(&[]),
+    "b": scope(&[r#".["a"]"#]),
+    "c": scope(&[r#".["a"]"#]),
+    "d": scope(&[r#".["b"]"#, r#".["c"]"#])
+  })
 }
 
 fn make_resolver(
@@ -62,8 +61,8 @@ fn make_resolver(
 
 #[test]
 fn wave_structure_is_correct() {
-  let top_level = diamond_dag_json(0);
-  let waves = execution_waves(&top_level).unwrap();
+  let root = diamond_dag_json(0);
+  let waves = execution_waves(&root).unwrap();
   assert_eq!(
     waves,
     vec![
@@ -77,8 +76,8 @@ fn wave_structure_is_correct() {
 #[test]
 fn all_providers_apply() {
   let records: Arc<Mutex<Vec<ApplyRecord>>> = Arc::new(Mutex::new(Vec::new()));
-  let top_level = diamond_dag_json(0);
-  execute_apply_waves(&top_level, make_resolver(&records)).unwrap();
+  let root = diamond_dag_json(0);
+  execute_apply_waves(&root, make_resolver(&records)).unwrap();
 
   let locked = records.lock().unwrap();
   let names: std::collections::HashSet<&str> =
@@ -93,8 +92,8 @@ fn all_providers_apply() {
 fn wave1_runs_in_parallel() {
   let records: Arc<Mutex<Vec<ApplyRecord>>> = Arc::new(Mutex::new(Vec::new()));
   // 50 ms each; if sequential they would not overlap.
-  let top_level = diamond_dag_json(50);
-  execute_apply_waves(&top_level, make_resolver(&records)).unwrap();
+  let root = diamond_dag_json(50);
+  execute_apply_waves(&root, make_resolver(&records)).unwrap();
 
   let locked = records.lock().unwrap();
   let b = locked
@@ -114,8 +113,8 @@ fn wave1_runs_in_parallel() {
 #[test]
 fn wave2_waits_for_wave1() {
   let records: Arc<Mutex<Vec<ApplyRecord>>> = Arc::new(Mutex::new(Vec::new()));
-  let top_level = diamond_dag_json(20);
-  execute_apply_waves(&top_level, make_resolver(&records)).unwrap();
+  let root = diamond_dag_json(20);
+  execute_apply_waves(&root, make_resolver(&records)).unwrap();
 
   let locked = records.lock().unwrap();
   let b = locked

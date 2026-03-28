@@ -10,7 +10,6 @@ use nix_hapi_lib::executor::{
 use nix_hapi_lib::plan::{ApplyReport, ProviderPlan, ResourceChange};
 use nix_hapi_lib::provider::Provider;
 use nix_hapi_lib::subprocess::SubprocessProvider;
-use std::collections::HashMap;
 use std::io::Read;
 use thiserror::Error;
 
@@ -62,8 +61,7 @@ fn main() -> Result<(), ApplicationError> {
 
   let mut stdin_json = String::new();
   std::io::stdin().read_to_string(&mut stdin_json)?;
-  let top_level: HashMap<String, serde_json::Value> =
-    serde_json::from_str(&stdin_json)?;
+  let root: serde_json::Value = serde_json::from_str(&stdin_json)?;
 
   let resolver = |instance: &str, provider_type: &str| {
     let path = config.providers.get(provider_type).ok_or_else(|| {
@@ -81,19 +79,19 @@ fn main() -> Result<(), ApplicationError> {
   };
 
   match cli.command {
-    Command::Plan => run_plan(&top_level, resolver),
-    Command::Apply => run_apply(&top_level, resolver),
+    Command::Plan => run_plan(&root, resolver),
+    Command::Apply => run_apply(&root, resolver),
   }
 }
 
 fn run_plan<F>(
-  top_level: &HashMap<String, serde_json::Value>,
+  root: &serde_json::Value,
   resolver: F,
 ) -> Result<(), ApplicationError>
 where
   F: Fn(&str, &str) -> Result<Box<dyn Provider>, ExecuteError> + Sync,
 {
-  let plan = execute_plan_waves(top_level, resolver)?;
+  let plan = execute_plan_waves(root, resolver)?;
 
   if plan.is_empty() {
     println!("No changes.");
@@ -122,13 +120,13 @@ where
 }
 
 fn run_apply<F>(
-  top_level: &HashMap<String, serde_json::Value>,
+  root: &serde_json::Value,
   resolver: F,
 ) -> Result<(), ApplicationError>
 where
   F: Fn(&str, &str) -> Result<Box<dyn Provider>, ExecuteError> + Sync,
 {
-  let reports = execute_apply_waves(top_level, resolver)?;
+  let reports = execute_apply_waves(root, resolver)?;
 
   let any_changes = reports.iter().any(|(_, r)| {
     !r.created.is_empty() || !r.modified.is_empty() || !r.deleted.is_empty()

@@ -13,7 +13,6 @@ use crate::provider::{
   resolve_config, Provider, ProviderError, ResolvedConfig,
 };
 use serde_json::Value;
-use std::collections::HashMap;
 use thiserror::Error;
 
 // ── Errors ────────────────────────────────────────────────────────────────────
@@ -85,13 +84,13 @@ fn split_scope(scope: &Value) -> (NixHapiMeta, Value) {
 /// `execute_apply_waves` can call `apply` immediately without re-resolving.
 fn plan_instance_inner<F>(
   instance_name: &str,
-  top_level: &HashMap<String, Value>,
+  root: &Value,
   resolve_fn: &F,
 ) -> Result<(ProviderPlan, Box<dyn Provider>, ResolvedConfig), ExecuteError>
 where
   F: Fn(&str, &str) -> Result<Box<dyn Provider>, ExecuteError>,
 {
-  let scope_value = top_level.get(instance_name).expect("instance must exist");
+  let scope_value = root.get(instance_name).expect("instance must exist");
   let (meta, data) = split_scope(scope_value);
 
   let spec =
@@ -138,14 +137,14 @@ where
 /// Provider plans in the returned [`Plan`] are stored in topological order
 /// (wave 0 first), preserving correct sequencing for runbook display.
 pub fn execute_plan_waves<F>(
-  top_level: &HashMap<String, Value>,
+  root: &Value,
   resolve_provider: F,
 ) -> Result<Plan, ExecuteError>
 where
   F: Fn(&str, &str) -> Result<Box<dyn Provider>, ExecuteError> + Sync,
 {
   let mut plan = Plan::default();
-  let waves = execution_waves(top_level)?;
+  let waves = execution_waves(root)?;
 
   for wave in &waves {
     let wave_results: Vec<Result<ProviderPlan, ExecuteError>> =
@@ -154,7 +153,7 @@ where
           .iter()
           .map(|name| {
             scope.spawn(|| {
-              plan_instance_inner(name.as_str(), top_level, &resolve_provider)
+              plan_instance_inner(name.as_str(), root, &resolve_provider)
                 .map(|(pp, _, _)| pp)
             })
           })
@@ -177,13 +176,13 @@ where
 /// All instances in wave N complete before any instance in wave N+1 begins.
 /// Instances with no changes skip the apply call and return an empty report.
 pub fn execute_apply_waves<F>(
-  top_level: &HashMap<String, Value>,
+  root: &Value,
   resolve_provider: F,
 ) -> Result<Vec<(String, ApplyReport)>, ExecuteError>
 where
   F: Fn(&str, &str) -> Result<Box<dyn Provider>, ExecuteError> + Sync,
 {
-  let waves = execution_waves(top_level)?;
+  let waves = execution_waves(root)?;
   let mut reports: Vec<(String, ApplyReport)> = Vec::new();
 
   for wave in &waves {
@@ -193,11 +192,8 @@ where
           .iter()
           .map(|name| {
             scope.spawn(|| {
-              let (pp, provider, config) = plan_instance_inner(
-                name.as_str(),
-                top_level,
-                &resolve_provider,
-              )?;
+              let (pp, provider, config) =
+                plan_instance_inner(name.as_str(), root, &resolve_provider)?;
               if pp.is_empty() {
                 return Ok((name.to_string(), ApplyReport::default()));
               }
