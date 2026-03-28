@@ -6,10 +6,11 @@
 
 * Introduction
 
-nix-hapi ("Nix happy API") is a declarative reconciler for HTTP APIs.  It
-lets you describe the desired state of external services — DNS records, Git
-forges, identity providers, secret managers, and similar — as pure Nix
-expressions, then reconciles the live API state to match.
+nix-hapi ("Nix happy API") is a declarative reconciler for external service
+APIs.  It lets you describe the desired state of external services — DNS
+records, Git forges, identity providers, LDAP directories, secret managers,
+and similar — as pure Nix expressions, then reconciles the live state to
+match.
 
 The pipeline is intentionally simple:
 
@@ -18,7 +19,7 @@ Nix expressions (desired state)
     ↓  nix eval --json
 JSON blob
     ↓  nix-hapi apply
-Live API calls (per provider)
+Live service calls (per provider)
 #+end_src
 
 Nix is the configuration language.  A Rust binary is the reconciler.  There
@@ -26,7 +27,7 @@ is no state file: the reconciler always queries live state and diffs against
 the expression.
 
 nix-hapi generalises the architecture first validated in
-[[https://gitea.proton/logan/ldap-reconciler][ldap-reconciler]] to arbitrary HTTP API providers.
+[[https://gitea.proton/logan/ldap-reconciler][ldap-reconciler]] to arbitrary external service providers.
 
 * Installation
 
