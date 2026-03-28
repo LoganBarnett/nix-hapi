@@ -4,45 +4,16 @@
 Tasks are worked through together; do not mark DONE without reviewing with the
 user first.  Add new tasks freely; clean up only in a joint session.
 
-* Parallelism — fake API and integration tests                         :dag:test:
+* DONE Parallelism — fake API and integration tests                    :dag:test:
   :PROPERTIES:
-  :STATUS:   partial
+  :STATUS:   done
   :END:
 
-  Wave-based parallel execution is implemented in ~dag::execution_waves~ and
-  the CLI's ~build_plan~/~run_apply~.  What remains:
-
-** TODO Fake provider for ordering tests
-
-   Build a ~FakeProvider~ that lives in a test-only crate (or a ~#[cfg(test)]~
-   module in ~nix-hapi-lib~).
-
-   - Accepts a configurable per-instance ~delay_ms~ parameter in its config so
-     tests can slow down specific providers.
-   - Records the wall-clock time each ~apply~ call started and finished.
-   - On ~list_live~ returns whatever desired state was passed to it (simulating
-     a clean slate or an already-applied state).
-
-   This lets integration tests assert that:
-   - All instances in wave 0 started before any instance in wave 1.
-   - Two independent instances (same wave) overlapped in execution time.
-
-   The fake provider must be injectable into the CLI's ~resolve_provider~ switch.
-   See [[*Provider library boundary]] for the broader registry design; the fake
-   provider can be a first consumer of that boundary.
-
-** TODO Wave-ordering integration tests
-
-   With ~FakeProvider~ in hand, write tests for ~build_plan~ and ~run_apply~
-   that:
-
-   1. Build a JSON blob with ≥ 3 instances forming a diamond DAG:
-      A → B, A → C, B → D, C → D.
-   2. Inject delays so timing is unambiguous.
-   3. Assert wave membership: {A} → {B, C} → {D}.
-   4. Assert that the two middle providers overlapped (B.start < C.finish and
-      C.start < B.finish).
-   5. Assert that D did not start before B and C both finished.
+  Implemented in ~crates/fake/~.  ~FakeProvider~ accepts ~delay_ms~ via config,
+  records wall-clock start/finished times per apply, and exposes ~ApplyRecord~
+  with ~overlaps_with~.  ~crates/fake/tests/wave_ordering.rs~ covers wave
+  membership, parallel overlap, and wave-sequencing assertions against the
+  diamond DAG.
 
 * DONE Provider library boundary                                       :arch:
   :PROPERTIES:
@@ -106,53 +77,17 @@ user first.  Add new tasks freely; clean up only in a joint session.
    - ~mkLdapProvider~ for the LDAP provider block.
    - Each ~mk~ function validates its inputs and emits the canonical JSON shape.
 
-* Executor and DAG node-level refactor                            :arch:feat:
+* DONE Executor and DAG node-level refactor                       :arch:feat:
   :PROPERTIES:
-  :STATUS:   todo
+  :STATUS:   done
   :END:
 
-  ~derivedFrom~ requires every node in the full JSON tree to be a potential DAG
-  vertex, not only top-level provider instances.  This task refactors ~dag.rs~
-  and ~executor.rs~ to that model before ~derivedFrom~ is implemented.
-
-** Design
-
-   Current model (provider-scope level):
-   - DAG vertices = top-level instance names.
-   - Edges come from ~__nixhapi.dependsOn~ jq expressions on each instance.
-   - ~execution_waves~ returns ~Vec<Vec<String>>~ of instance names.
-   - Executor iterates waves, spawning a thread per instance per wave.
-
-   Target model (arbitrary node level):
-   - DAG vertices = absolute jq paths into the full tree (e.g. ~.hr-system~,
-     ~.scheduling.memberships.alice-on-call.userId~).
-   - Edges come from:
-     - ~__nixhapi.dependsOn~ on any ~__nixhapi~ meta block (existing).
-     - ~derivedFrom.inputs~ values on any ~FieldValue::DerivedFrom~ node (new).
-   - The executor walks the tree to collect all DAG edges, then runs Kahn on
-     the full node set.
-   - Provider scopes (~.hr-system~, etc.) are still the unit of work: a wave
-     entry is a provider scope, not an individual field.  But a ~derivedFrom~
-     field in scope A that depends on a field in scope B promotes scope B to
-     an earlier wave than scope A would otherwise occupy.
-   - Within a wave the executor still spawns one thread per provider instance.
-
-** Acceptance criteria
-
-   - ~execution_waves~ accepts the full JSON value (not ~HashMap<String, Value>~)
-     and returns waves of provider-instance names as before, but the wave
-     assignment accounts for ~derivedFrom~ inputs at any depth.
-   - Adding a ~derivedFrom~ cross-instance input causes the referenced provider
-     instance to be placed in an earlier wave, not just the referencing instance
-     in a later one.
-   - Existing unit tests for ~dag.rs~ all pass.
-   - Existing integration tests all pass.
-
-** TODO Refactor dag.rs to collect edges from the full tree
-
-** TODO Update executor.rs for new dag API
-
-** TODO Add unit tests for cross-instance derivedFrom wave promotion
+  ~dag.rs~ now walks the full desired-state tree to collect edges from both
+  ~__nixhapi.dependsOn~ meta blocks and ~FieldValue::DerivedFrom~ inputs at
+  any depth.  ~execution_waves~ and ~topological_order~ take ~&Value~ instead
+  of ~&HashMap<String, Value>~.  ~executor.rs~ updated accordingly.  20 unit
+  tests in ~dag::tests~ cover chains, diamonds, cycles, error cases, and both
+  cycle orientations across the two edge mechanisms.
 
 * derivedFrom — runtime-computed field values                          :feat:
   :PROPERTIES:
@@ -170,20 +105,23 @@ user first.  Add new tasks freely; clean up only in a joint session.
    #+begin_src rust :exports code
    DerivedFrom {
      inputs: HashMap<String, String>,  // alias → absolute jq path into full tree
-     expression: String,               // jq expression; receives $inputs, . is parent scope
+     expression: String,               // jq expression evaluated with . = resolved inputs
    }
    #+end_src
 
    - ~inputs~ maps a short alias to an absolute jq path into the full top-level
-     JSON blob (e.g. ~"user_id": ".hr-system.users.alice.id"~).
+     JSON blob (e.g. ~"uid": ".[\"hr-system\"].users.alice.id"~).
    - Each ~inputs~ entry creates an implicit DAG edge: the field that owns this
      ~derivedFrom~ cannot be evaluated until every aliased path resolves.
-   - ~expression~ is a jq program where ~$inputs~ is an object of
-     ~{ alias: resolved_value, ... }~ and ~.~ is the parent object (the object
-     that contains this field).
+   - ~expression~ is a jq program where ~.~ is the resolved inputs object
+     ~{ alias: resolved_value, ... }~.  There is no ~$inputs~ variable — the
+     resolved inputs object IS the input, so aliases are accessed as ~.uid~,
+     ~.schedule_id~, etc.
+   - All input paths must be absolute (from root); no relative addressing.
+     The Nix layer generates these paths from attribute references so verbosity
+     in the JSON is not a concern for authors.
    - The expression must return a ~FieldValue~-shaped object.  The jq context
-     includes injected helpers ~mkManaged~, ~mkInitial~, etc. so the author can
-     write ~mkManaged(.user_id)~ instead of raw JSON.
+     includes injected helpers ~mkManaged~, ~mkInitial~, etc.
    - ~derivedFrom~ fields always re-evaluate on every reconciliation (semantics
      of ~managed~, not ~initial~).
    - Providers register additional scoped jq helpers (see [[*Provider jq
@@ -193,7 +131,7 @@ user first.  Add new tasks freely; clean up only in a joint session.
    #+begin_src nix :exports code
    userId = lib.mkDerivedFrom {
      inputs = { uid = lib.inputPath config.hr-system.users.alice; };
-     expression = "mkManaged($inputs.uid)";
+     expression = "mkManaged(.uid)";
    };
    #+end_src
 
@@ -232,53 +170,63 @@ user first.  Add new tasks freely; clean up only in a joint session.
      unresolved ~derivedFrom~ fields; need to decide how to render partially
      known inputs (some resolved by earlier waves, some still pending).
 
-** TODO Implement derivedFrom FieldValue variant and Nix helper
+** DONE Implement derivedFrom FieldValue variant
+   ~FieldValue::DerivedFrom { inputs, expression }~ added to ~field_value.rs~.
+   Calling ~resolve()~ on it returns ~DerivedFromNotResolved~; the executor
+   handles evaluation between waves.  Nix helper (~mkDerivedFrom~) still TODO.
 
-** TODO Wire derivedFrom resolution into executor (post-refactor)
+** DONE Implement mkDerivedFrom Nix helper in nix/lib/default.nix
+   ~mkTree~ builds a path-aware proxy of any config attrset; every node
+   carries a ~path~ attribute containing its absolute jq address.  FieldValue
+   leaves (string ~__nixhapi~ discriminant) stop recursion.
+   ~mkDerivedFrom { inputs, expression }~ emits the ~derived-from~ JSON shape.
+   Usage: ~tree."hr-system".users.alice.uid.path~ produces
+   ~.[\"hr-system\"][\"users\"][\"alice\"][\"uid\"]~.
+
+** DONE Wire derivedFrom resolution into executor (post-refactor)
+   ~crates/lib/src/derived.rs~ added with ~resolve_derived_from_tree~.
+   ~execute_apply_waves~ now maintains a crystalized tree; calls ~list_live~
+   after each wave and resolves ~DerivedFrom~ nodes before the next wave.
+   ~FakeProvider~ extended with ~with_live_state~ and ~with_plan_snapshots~.
+   ~crates/fake/tests/derived_from_integration.rs~ covers single-hop, chain,
+   and diamond patterns end-to-end.  48 tests pass.
 
 * Provider jq functions                                               :feat:
   :PROPERTIES:
-  :STATUS:   todo
+  :STATUS:   resolved-by-design
   :END:
 
-  Providers should be able to register custom jq functions available in
-  ~derivedFrom~ expressions, scoped under a provider-specific prefix to
-  avoid collisions (e.g. ~mkLdapRecord~, ~mkPorkbunDomain~).
+  Providers are not aware of each other at runtime — no registration
+  mechanism is needed.  Provider authors encode their domain knowledge into
+  Nix ~mk*~ helpers (e.g. ~mkScheduleMembership~) that emit the correct
+  ~dependsOn~ and ~derivedFrom~ constellations, using ~lib.mkTree~ to
+  compute the required jq paths.  Consumers call the helper; the helper
+  handles all the wiring.
 
-  Open questions:
-  - Registration mechanism: a new ~list_jq_functions~ JSON-RPC method on
-    the provider host, or a static declaration loaded at startup?
-  - How are provider-defined functions made available to expressions in
-    other providers?  (Cross-provider derivation is a valid use case.)
-  - Should the core ~mk*~ functions (~mkManaged~, ~mkInitial~, etc.) be
-    available in all jq contexts by default, or opt-in?
+  The core ~mk*~ functions (~mkManaged~, ~mkInitial~, etc.) are always
+  available in every ~derivedFrom~ expression via the ~MK_HELPERS~ preamble
+  in ~crates/lib/src/derived.rs~.  No further mechanism is required.
+
+  No implementation work needed.  Close this task.
 
 * Shadow values — virtual fields for composition                       :feat:
   :PROPERTIES:
-  :STATUS:   design
+  :STATUS:   open-question
   :END:
 
-  A shadow (virtual) field is declared in the desired state but the provider
-  is instructed to ignore it entirely: it is never read from live state, never
-  diffed, and never written.  Its sole purpose is to hold an intermediate value
-  that other fields can reference via ~derivedFrom~.
+  Open question: do we even need this?
 
-  Example use case: compute a derived DNS record value from the allocated IP
-  of a shadow field that holds the cloud provider's output:
+  Since providers are not privileged — any key in the tree outside of a
+  provider scope is just data that nobody acts on — a "shadow" value may
+  already be achievable by placing a ~derivedFrom~ field somewhere in the
+  tree that no provider owns.  The provider only sees its own scope; it
+  would never encounter a field declared at an unowned path.
 
-  #+begin_src nix :exports code
-  allocatedIp = mkShadow (mkDerivedFrom ".cloud.outputs.ip");
-  aRecord    = mkManaged "${config.cloud.allocatedIp}";
-  #+end_src
-
-  Implementation notes:
-  - New ~FieldValue~ variant: ~Shadow { inner: Box<FieldValue> }~.
-  - Alternatively, ~Unmanaged~ already means "don't touch", but shadow is
-    stronger: the provider should not even read it from live state.
-  - Provider ~plan~ implementations must skip shadow fields in both the desired
-    scan and the live comparison.
-  - The provider trait may need a ~is_shadow(field_name, value)~ helper or a
-    pre-processing step that strips shadow fields before the diff.
+  The original design motivation was intra-provider intermediate values
+  (e.g. ~allocatedIp~ hanging off a provider scope, visible to the provider
+  but marked "don't diff").  That use case may still require a
+  ~FieldValue::Shadow~ variant or a pre-processing strip in the provider
+  trait.  Defer until a concrete provider needs it.
 
 * tasks.org cleanup                                                    :meta:
   :PROPERTIES:

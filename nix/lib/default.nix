@@ -54,4 +54,67 @@
   # Example:
   #   __nixhapi.dependsOn = [ (mkDependsOn "prod-ldap") ];
   mkDependsOn = instanceName: ".[${builtins.toJSON instanceName}]";
+
+  # ── Path proxy ────────────────────────────────────────────────────────────────
+
+  # Builds a path-aware proxy that mirrors `config`.  Every node in the proxy
+  # carries a `path` attribute containing its absolute jq address from the
+  # top-level JSON root, ready for use as a derivedFrom input.
+  #
+  # Recursion stops at FieldValue leaves — attrsets whose __nixhapi key is a
+  # string discriminant (e.g. "managed", "derived-from").  Plain data objects
+  # and provider meta blocks (where __nixhapi is itself an attrset) are
+  # traversed normally.
+  #
+  # Example:
+  #   let
+  #     config = { "hr-system" = ldap.mkLdapProvider { ... }; };
+  #     tree   = lib.mkTree config;
+  #   in
+  #     tree."hr-system".users.alice.uid.path
+  #     # => ".[\"hr-system\"][\"users\"][\"alice\"][\"uid\"]"
+  mkTree = let
+    buildNode = prefix: node:
+      if
+        builtins.isAttrs node
+        && !(builtins.isString (node.__nixhapi or null))
+      then
+        builtins.mapAttrs
+        (k: v: buildNode "${prefix}[${builtins.toJSON k}]" v)
+        node
+        // {path = prefix;}
+      else {path = prefix;};
+  in
+    config:
+      builtins.mapAttrs
+      (instance: scope:
+        buildNode ".[${builtins.toJSON instance}]" scope)
+      config;
+
+  # ── derivedFrom ───────────────────────────────────────────────────────────────
+
+  # Declares a field whose value is computed at reconciliation time from live
+  # state produced by earlier waves.
+  #
+  # `inputs` maps short aliases to absolute jq paths obtained from mkTree.
+  # `expression` is a jq program evaluated with `.` bound to the resolved
+  # inputs object `{ alias: value, ... }`.  The mk* helpers (mkManaged,
+  # mkInitial, etc.) are available in the expression without any preamble.
+  #
+  # Each input creates an implicit DAG edge: the owning instance cannot begin
+  # until the instance named in the path has been fully applied.
+  #
+  # Example:
+  #   let tree = lib.mkTree config; in
+  #   userId = lib.mkDerivedFrom {
+  #     inputs     = { uid = tree."hr-system".users.alice.uid.path; };
+  #     expression = "mkManaged(.uid)";
+  #   };
+  mkDerivedFrom = {
+    inputs,
+    expression,
+  }: {
+    __nixhapi = "derived-from";
+    inherit inputs expression;
+  };
 }

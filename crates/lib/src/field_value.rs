@@ -48,10 +48,11 @@ pub enum FieldValue {
   InitialFromEnv { env: String },
   /// Computed at reconciliation time from declared input paths.
   ///
-  /// The jq `expression` is evaluated with a `$inputs` object whose keys are
-  /// the aliases declared in `inputs` and whose values are the resolved values
-  /// at the corresponding absolute jq paths into the full desired-state blob.
-  /// The expression must return a `FieldValue`-shaped object.
+  /// The jq `expression` is evaluated with `.` bound to an object whose keys
+  /// are the aliases declared in `inputs` and whose values are the resolved
+  /// values at the corresponding absolute jq paths into the crystalized live
+  /// state after preceding waves have completed.  The expression must return
+  /// a `FieldValue`-shaped object.
   DerivedFrom {
     inputs: HashMap<String, String>,
     expression: String,

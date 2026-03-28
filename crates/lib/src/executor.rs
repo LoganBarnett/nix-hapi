@@ -7,6 +7,7 @@
 //! DAG-wave scheduling, config resolution, live-state fetching, and threading.
 
 use crate::dag::{execution_waves, DagError};
+use crate::derived::{resolve_derived_from_tree, DerivedFromError};
 use crate::meta::NixHapiMeta;
 use crate::plan::{ApplyReport, Plan, ProviderPlan};
 use crate::provider::{
@@ -51,6 +52,9 @@ pub enum ExecuteError {
 
   #[error("Failed to resolve provider dependency order: {0}")]
   DependencyResolution(#[from] DagError),
+
+  #[error("Failed to resolve derivedFrom fields between waves: {0}")]
+  DerivedFromResolution(#[from] DerivedFromError),
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -174,7 +178,8 @@ where
 /// wave in parallel.
 ///
 /// All instances in wave N complete before any instance in wave N+1 begins.
-/// Instances with no changes skip the apply call and return an empty report.
+/// Between waves, any `DerivedFrom` fields whose inputs are now available in
+/// the crystalized live-state tree are resolved before the next wave plans.
 pub fn execute_apply_waves<F>(
   root: &Value,
   resolve_provider: F,
@@ -184,35 +189,66 @@ where
 {
   let waves = execution_waves(root)?;
   let mut reports: Vec<(String, ApplyReport)> = Vec::new();
+  // Crystalized tree: post-apply live state keyed by instance name.
+  let mut crystalized = serde_json::json!({});
+  // Active desired-state tree, updated between waves as DerivedFrom fields resolve.
+  let mut active_root = root.clone();
 
   for wave in &waves {
-    let wave_results: Vec<Result<(String, ApplyReport), ExecuteError>> =
-      std::thread::scope(|scope| {
-        wave
-          .iter()
-          .map(|name| {
-            scope.spawn(|| {
-              let (pp, provider, config) =
-                plan_instance_inner(name.as_str(), root, &resolve_provider)?;
-              if pp.is_empty() {
-                return Ok((name.to_string(), ApplyReport::default()));
-              }
-              provider
-                .apply(&pp, &config)
-                .map_err(|source| ExecuteError::ProviderOperation {
-                  instance: name.to_string(),
-                  source,
-                })
-                .map(|report| (name.to_string(), report))
-            })
+    active_root = resolve_derived_from_tree(&active_root, &crystalized)?;
+
+    // wave_results carries the provider and config forward so list_live can
+    // be called after apply to populate the crystalized tree.
+    let wave_results: Vec<
+      Result<
+        (String, ApplyReport, Box<dyn Provider>, ResolvedConfig),
+        ExecuteError,
+      >,
+    > = std::thread::scope(|scope| {
+      wave
+        .iter()
+        .map(|name| {
+          scope.spawn(|| {
+            let (pp, provider, config) = plan_instance_inner(
+              name.as_str(),
+              &active_root,
+              &resolve_provider,
+            )?;
+            if pp.is_empty() {
+              return Ok((
+                name.to_string(),
+                ApplyReport::default(),
+                provider,
+                config,
+              ));
+            }
+            provider
+              .apply(&pp, &config)
+              .map_err(|source| ExecuteError::ProviderOperation {
+                instance: name.to_string(),
+                source,
+              })
+              .map(|report| (name.to_string(), report, provider, config))
           })
-          .collect::<Vec<_>>()
-          .into_iter()
-          .map(|h| h.join().expect("provider apply thread panicked"))
-          .collect()
-      });
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|h| h.join().expect("provider apply thread panicked"))
+        .collect()
+    });
+
     for result in wave_results {
-      reports.push(result?);
+      let (name, report, provider, config) = result?;
+      // Capture post-apply live state so subsequent waves can resolve their
+      // DerivedFrom inputs.
+      let live = provider.list_live(&config, &[]).map_err(|source| {
+        ExecuteError::ProviderOperation {
+          instance: name.clone(),
+          source,
+        }
+      })?;
+      crystalized[&name] = live;
+      reports.push((name, report));
     }
   }
 

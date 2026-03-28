@@ -1,4 +1,5 @@
 pub mod dag;
+pub mod derived;
 pub mod executor;
 pub mod field_value;
 pub mod logging;

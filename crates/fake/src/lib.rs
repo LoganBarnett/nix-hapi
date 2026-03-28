@@ -34,11 +34,49 @@ impl ApplyRecord {
 /// A provider that sleeps and records timing.  Suitable only for tests.
 pub struct FakeProvider {
   records: Arc<Mutex<Vec<ApplyRecord>>>,
+  /// Value returned by `list_live`.  Defaults to an empty object.
+  live_state: serde_json::Value,
+  /// Accumulates a clone of every `desired` argument passed to `plan`.
+  plan_snapshots: Arc<Mutex<Vec<serde_json::Value>>>,
 }
 
 impl FakeProvider {
   pub fn new(records: Arc<Mutex<Vec<ApplyRecord>>>) -> Self {
-    Self { records }
+    Self {
+      records,
+      live_state: serde_json::json!({}),
+      plan_snapshots: Arc::new(Mutex::new(Vec::new())),
+    }
+  }
+
+  /// Constructs a provider that returns `live_state` from `list_live`,
+  /// simulating post-apply values such as API-assigned IDs.
+  pub fn with_live_state(
+    records: Arc<Mutex<Vec<ApplyRecord>>>,
+    live_state: serde_json::Value,
+  ) -> Self {
+    Self {
+      records,
+      live_state,
+      plan_snapshots: Arc::new(Mutex::new(Vec::new())),
+    }
+  }
+
+  /// Replaces the plan-snapshot recorder with a caller-supplied one.
+  ///
+  /// The caller retains a clone of the arc so it can inspect the desired
+  /// states that were passed to `plan` after the wave completes.
+  pub fn with_plan_snapshots(
+    mut self,
+    snapshots: Arc<Mutex<Vec<serde_json::Value>>>,
+  ) -> Self {
+    self.plan_snapshots = snapshots;
+    self
+  }
+
+  /// Returns a clone of the shared plan-snapshot recorder.
+  pub fn plan_snapshots(&self) -> Arc<Mutex<Vec<serde_json::Value>>> {
+    Arc::clone(&self.plan_snapshots)
   }
 }
 
@@ -56,16 +94,17 @@ impl Provider for FakeProvider {
     _config: &ResolvedConfig,
     _filters: &[Filter],
   ) -> Result<serde_json::Value, ProviderError> {
-    Ok(serde_json::json!({}))
+    Ok(self.live_state.clone())
   }
 
   fn plan(
     &self,
-    _desired: &serde_json::Value,
+    desired: &serde_json::Value,
     _live: &serde_json::Value,
     _meta: &NixHapiMeta,
     _config: &ResolvedConfig,
   ) -> Result<ProviderPlan, ProviderError> {
+    self.plan_snapshots.lock().unwrap().push(desired.clone());
     Ok(ProviderPlan {
       instance_name: String::new(),
       provider_type: "fake".to_string(),

@@ -122,7 +122,7 @@ pub enum DagError {
 // ── jq evaluation ─────────────────────────────────────────────────────────────
 
 /// Evaluates a jq expression against `input` and returns the first output.
-fn eval_jq_first(
+pub(crate) fn eval_jq_first(
   instance: &str,
   expression: &str,
   input: Value,
