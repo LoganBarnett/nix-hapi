@@ -269,3 +269,169 @@ Deferred to later phases:
 - Interactive confirmation mode (confirm each change individually).
 - Continuous reconciliation daemon mode.
 - Metrics and observability.
+
+* mk* Helper Reference
+
+Every JSON construct that contains a ~__nixhapi~ key has a corresponding
+Nix constructor function.  These functions validate their inputs and emit
+the canonical JSON shape that the reconciler and providers expect.  They
+live in two places:
+
+- ~nix/lib/default.nix~ — provider-agnostic helpers, exposed as
+  ~inputs.nix-hapi.lib~.
+- ~crates/<provider>/nix/default.nix~ — provider-specific helpers,
+  exposed under ~inputs.nix-hapi.lib.<provider>~.
+
+** Field value constructors (~nix/lib/default.nix~)
+
+These wrap individual field values.  Every field in a provider's desired
+state must be one of these shapes; a bare string is not valid JSON for the
+reconciler.
+
+| Constructor                  | JSON ~__nixhapi~ tag   | Meaning                                          |
+|------------------------------+------------------------+--------------------------------------------------|
+| ~mkManaged value~            | ~"managed"~            | Enforce this value on every reconciliation.      |
+| ~mkInitial value~            | ~"initial"~            | Set once if absent; leave alone after that.      |
+| ~mkUnmanaged~                | ~"unmanaged"~          | Never touch this field.                          |
+| ~mkManagedFromPath path~     | ~"managed-from-path"~  | Read from file path; enforce on every run.       |
+| ~mkInitialFromPath path~     | ~"initial-from-path"~  | Read from file path; set once.                   |
+| ~mkManagedFromEnv env~       | ~"managed-from-env"~   | Read from environment variable; enforce always.  |
+| ~mkInitialFromEnv env~       | ~"initial-from-env"~   | Read from environment variable; set once.        |
+| ~mkDerivedFrom {inputs, expression}~ | ~"derived-from"~ | Computed at apply time from earlier wave output. |
+
+** Dependency helpers (~nix/lib/default.nix~)
+
+| Constructor              | Used in              | Effect                                              |
+|--------------------------+----------------------+-----------------------------------------------------|
+| ~mkDependsOn instanceName~ | ~__nixhapi.dependsOn~ | Orders this instance after ~instanceName~ in the DAG. |
+
+** Path proxy (~nix/lib/default.nix~)
+
+~mkTree config~ builds a read-only mirror of ~config~ where every node
+carries a ~path~ attribute containing its absolute jq address from the
+JSON root.  FieldValue leaves (any attrset with a string ~__nixhapi~ key)
+are treated as atomic — recursion stops there.
+
+#+begin_src nix :exports code
+let
+  config = { "hr-system" = ldap.mkLdapProvider { ... }; };
+  tree   = lib.mkTree config;
+in
+  tree."hr-system".users.alice.uid.path
+  # => ".[\"hr-system\"][\"users\"][\"alice\"][\"uid\"]"
+#+end_src
+
+The path strings produced by ~mkTree~ are the correct input format for
+~mkDerivedFrom~'s ~inputs~ map and for ~mkDependsOn~.
+
+** LDAP provider helpers (~crates/ldap/nix/default.nix~)
+
+Accessed via ~inputs.nix-hapi.lib.ldap~.
+
+| Constructor          | Emits                                                          |
+|----------------------+----------------------------------------------------------------|
+| ~mkLdapProvider {...}~ | Top-level provider scope with ~__nixhapi~ meta block.        |
+| ~mkLdapUser {...}~     | An LDAP user entry with required inetOrgPerson attributes.   |
+
+** Provider naming convention
+
+Any ~mk*~ function emitting a structure with a ~__nixhapi~ key follows
+these rules:
+
+1. The function name mirrors the JSON tag in PascalCase with an ~mk~
+   prefix: ~mkManaged~, ~mkInitial~, ~mkLdapProvider~.
+2. Required fields are positional or named arguments; optional fields
+   default to safe values (~ignore = []~, ~dependsOn = []~, etc.).
+3. The function never performs I/O.  It is a pure Nix expression that
+   produces a JSON-serialisable attrset.
+
+Provider authors adding new capabilities should follow the same pattern:
+provide a ~mk*~ function in the provider's ~nix/default.nix~ that encodes
+all ~dependsOn~ and ~derivedFrom~ wiring, so callers do not need to
+understand the reconciler's internal ordering constraints.
+
+* Diagrams
+
+The diagrams below are rendered from named source blocks using the ~d2~
+tool.  Each rendering block is named so it can be executed individually.
+To regenerate all SVG output files at once, run:
+
+#+begin_src sh :exports code
+nix develop --command \
+  emacs --batch \
+  --eval "(require 'ob-shell)" \
+  --eval "(setq org-confirm-babel-evaluate nil)" \
+  --eval '(find-file (expand-file-name "overview.org"))' \
+  --eval '(org-babel-goto-named-src-block "render-dag-topology")' \
+  --eval "(org-babel-execute-src-block)" \
+  --eval '(org-babel-goto-named-src-block "render-derived-from-lifecycle")' \
+  --eval "(org-babel-execute-src-block)" \
+  --eval "(save-buffer)"
+#+end_src
+
+~d2~ must be in ~PATH~.  Inside the Nix devShell (~nix develop~) it is
+available automatically.
+
+** DAG topology
+
+The wave model partitions provider instances by dependency depth.
+Instances in the same wave share no dependency relationship and execute
+concurrently.  All instances in wave ~N~ must complete before any instance
+in wave ~N+1~ begins.
+
+#+name: dag-topology
+#+begin_src d2 :exports code :eval no
+wave0: Wave 0 {
+  a
+  b
+}
+wave1: Wave 1 {
+  c
+  d
+}
+wave2: Wave 2 {
+  e
+}
+
+wave0.a -> wave1.c: dependsOn
+wave0.b -> wave1.d: dependsOn
+wave1.c -> wave2.e: dependsOn
+wave1.d -> wave2.e: dependsOn
+#+end_src
+
+#+name: render-dag-topology
+#+begin_src sh :stdin dag-topology :exports results :results file :file docs/dag-topology.svg
+d2 - docs/dag-topology.svg && echo docs/dag-topology.svg
+#+end_src
+
+** derivedFrom lifecycle
+
+This sequence shows how a ~DerivedFrom~ field in provider B is resolved
+using the live state produced by provider A after wave 0 completes.
+
+#+name: derived-from-lifecycle
+#+begin_src d2 :exports code :eval no
+shape: sequence_diagram
+
+nix: Nix
+executor: Executor
+"wave 0\n(provider A)": {
+  shape: rectangle
+}
+"wave 1\n(provider B)": {
+  shape: rectangle
+}
+
+nix -> executor: JSON blob\n(DerivedFrom fields present)
+executor -> "wave 0\n(provider A)": plan & apply
+"wave 0\n(provider A)" -> executor: list_live → live state
+executor -> executor: crystalize\nA → live state
+executor -> executor: resolve DerivedFrom\n(A's output now available)
+executor -> "wave 1\n(provider B)": plan with resolved field values
+"wave 1\n(provider B)" -> executor: apply
+#+end_src
+
+#+name: render-derived-from-lifecycle
+#+begin_src sh :stdin derived-from-lifecycle :exports results :results file :file docs/derived-from-lifecycle.svg
+d2 - docs/derived-from-lifecycle.svg && echo docs/derived-from-lifecycle.svg
+#+end_src

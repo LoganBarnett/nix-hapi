@@ -73,6 +73,7 @@
       pkgs.openssl
       pkgs.openldap
       pkgs.jq
+      pkgs.d2
       # Unified formatter
       pkgs.treefmt
       pkgs.alejandra

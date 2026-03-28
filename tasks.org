@@ -26,56 +26,35 @@ user first.  Add new tasks freely; clean up only in a joint session.
   spawns ~SubprocessProvider~ instances.  Adding a new provider requires only a
   new ~--provider~ flag; no code changes to the CLI.
 
-* Documentation and d2 diagrams                                        :docs:
+* DONE Documentation and d2 diagrams                                   :docs:
   :PROPERTIES:
-  :STATUS:   partial
+  :STATUS:   done
   :END:
 
   ~dag.rs~ has module-level doc comments explaining waves and ~dependsOn~.
-  The following are still outstanding:
+  ~overview.org~ now contains:
 
-** TODO DAG topology d2 diagram
+** DONE DAG topology d2 diagram
 
-   Create ~docs/dag-topology.d2~ illustrating the wave model and the
-   evaluation flow.  Reference it from a top-level ~design.org~ (or extend
-   the existing ~overview.org~) with:
+   Named d2 source block (~dag-topology~) and named shell rendering block
+   (~render-dag-topology~) in ~overview.org~.  Output: ~docs/dag-topology.svg~.
+   ~pkgs.d2~ added to ~devPackages~ in ~flake.nix~.
 
-   #+begin_src d2 :exports code
-   wave0: Wave 0 {
-     A; B
-   }
-   wave1: Wave 1 {
-     C; D
-   }
-   wave2: Wave 2 {
-     E
-   }
-   A -> C
-   B -> D
-   C -> E
-   D -> E
-   #+end_src
+** DONE derivedFrom lifecycle diagram
 
-   The d2 binary should be added to ~devPackages~ in ~flake.nix~ so diagrams
-   can be rendered with ~d2 docs/dag-topology.d2~.
+   Named d2 source block (~derived-from-lifecycle~) and named shell rendering
+   block (~render-derived-from-lifecycle~) in ~overview.org~.
+   Output: ~docs/derived-from-lifecycle.svg~.
 
-** TODO dependsOn expression lifecycle diagram
+   Rendering invocation in ~overview.org~ uses
+   ~org-babel-goto-named-src-block~ + ~org-babel-execute-src-block~ to target
+   each block by name, avoiding whole-buffer execution.
 
-   A sequence diagram showing:
-   1. Nix evaluation → JSON blob with jq path strings in ~dependsOn~.
-   2. CLI startup → ~execution_waves~ evaluates each expression against the
-      full blob.
-   3. Each wave's providers execute (concurrently within a wave).
-   4. Next wave unlocks.
+** DONE mk-helper reference in overview.org
 
-** TODO mk-helper reference in overview.org
-
-   Document the ~mk*~ naming convention:
-   - Any field or meta block using ~__nixhapi~ must have a corresponding Nix
-     ~mk~ function.
-   - ~mkManaged~, ~mkInitial~, ~mkUnmanaged~, ~mkManagedFromPath~, etc.
-   - ~mkLdapProvider~ for the LDAP provider block.
-   - Each ~mk~ function validates its inputs and emits the canonical JSON shape.
+   "mk* Helper Reference" section added to ~overview.org~ covering field value
+   constructors, dependency helpers, ~mkTree~, LDAP helpers, and the provider
+   naming convention.
 
 * DONE Executor and DAG node-level refactor                       :arch:feat:
   :PROPERTIES:
