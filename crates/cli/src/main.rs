@@ -4,12 +4,12 @@ mod logging;
 use clap::{Parser, Subcommand};
 use config::{CliRaw, Config, ConfigError};
 use logging::init_logging;
-use nix_hapi_ldap::LdapProvider;
 use nix_hapi_lib::executor::{
   execute_apply_waves, execute_plan_waves, ExecuteError,
 };
 use nix_hapi_lib::plan::{ApplyReport, ProviderPlan, ResourceChange};
 use nix_hapi_lib::provider::Provider;
+use nix_hapi_lib::subprocess::SubprocessProvider;
 use std::collections::HashMap;
 use std::io::Read;
 use thiserror::Error;
@@ -65,16 +65,35 @@ fn main() -> Result<(), ApplicationError> {
   let top_level: HashMap<String, serde_json::Value> =
     serde_json::from_str(&stdin_json)?;
 
+  let resolver = |instance: &str, provider_type: &str| {
+    let path = config.providers.get(provider_type).ok_or_else(|| {
+      ExecuteError::ProviderLookup {
+        instance: instance.to_string(),
+        provider_type: provider_type.to_string(),
+      }
+    })?;
+    SubprocessProvider::spawn(provider_type.to_string(), path)
+      .map_err(|e| ExecuteError::ProviderInit {
+        instance: instance.to_string(),
+        message: e.to_string(),
+      })
+      .map(|p| Box::new(p) as Box<dyn Provider>)
+  };
+
   match cli.command {
-    Command::Plan => run_plan(&top_level),
-    Command::Apply => run_apply(&top_level),
+    Command::Plan => run_plan(&top_level, resolver),
+    Command::Apply => run_apply(&top_level, resolver),
   }
 }
 
-fn run_plan(
+fn run_plan<F>(
   top_level: &HashMap<String, serde_json::Value>,
-) -> Result<(), ApplicationError> {
-  let plan = execute_plan_waves(top_level, resolve_provider_fn)?;
+  resolver: F,
+) -> Result<(), ApplicationError>
+where
+  F: Fn(&str, &str) -> Result<Box<dyn Provider>, ExecuteError> + Sync,
+{
+  let plan = execute_plan_waves(top_level, resolver)?;
 
   if plan.is_empty() {
     println!("No changes.");
@@ -102,10 +121,14 @@ fn run_plan(
   Ok(())
 }
 
-fn run_apply(
+fn run_apply<F>(
   top_level: &HashMap<String, serde_json::Value>,
-) -> Result<(), ApplicationError> {
-  let reports = execute_apply_waves(top_level, resolve_provider_fn)?;
+  resolver: F,
+) -> Result<(), ApplicationError>
+where
+  F: Fn(&str, &str) -> Result<Box<dyn Provider>, ExecuteError> + Sync,
+{
+  let reports = execute_apply_waves(top_level, resolver)?;
 
   let any_changes = reports.iter().any(|(_, r)| {
     !r.created.is_empty() || !r.modified.is_empty() || !r.deleted.is_empty()
@@ -121,20 +144,6 @@ fn run_apply(
   }
 
   Ok(())
-}
-
-/// Returns a boxed provider for the given type, or an error for unknown types.
-fn resolve_provider_fn(
-  instance: &str,
-  provider_type: &str,
-) -> Result<Box<dyn Provider>, ExecuteError> {
-  match provider_type {
-    "ldap" => Ok(Box::new(LdapProvider)),
-    other => Err(ExecuteError::ProviderLookup {
-      instance: instance.to_string(),
-      provider_type: other.to_string(),
-    }),
-  }
 }
 
 fn print_provider_plan(pp: &ProviderPlan) {

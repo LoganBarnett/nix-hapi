@@ -1,5 +1,7 @@
+use serde::{Deserialize, Serialize};
+
 /// The complete plan for one provider instance.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ProviderPlan {
   pub instance_name: String,
   pub provider_type: String,
@@ -14,7 +16,7 @@ impl ProviderPlan {
 }
 
 /// A change to a single resource.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum ResourceChange {
   Add {
     resource_id: String,
@@ -40,7 +42,7 @@ impl ResourceChange {
 }
 
 /// A change to a single field within a resource.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FieldDiff {
   pub field: String,
   /// Current live value; `None` if the field does not exist yet.
@@ -50,7 +52,7 @@ pub struct FieldDiff {
 }
 
 /// A single step in the execution runbook.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RunbookStep {
   /// Human-readable label shown in plan output.
   pub description: String,
@@ -69,7 +71,7 @@ pub struct RunbookStep {
 }
 
 /// Summary of changes applied by a provider.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ApplyReport {
   pub created: Vec<String>,
   pub modified: Vec<String>,

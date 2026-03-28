@@ -1,0 +1,320 @@
+#+title:     Provider API
+#+language:  en
+
+* Overview
+
+Providers are separate binaries that the nix-hapi CLI spawns at reconciliation
+time.  Each provider binary communicates with the CLI over its standard
+input/output using JSON-RPC 2.0, one request/response pair per newline.  This
+design is language-agnostic: any binary that speaks the protocol is a valid
+provider.
+
+Providers are registered at invocation time with the ~--provider~ flag:
+
+#+begin_src sh :exports code
+nix-hapi plan --provider ldap=/run/current-system/sw/bin/nix-hapi-ldap < desired.json
+nix-hapi apply --provider ldap=/run/current-system/sw/bin/nix-hapi-ldap \
+               --provider http=/usr/local/bin/my-http-provider < desired.json
+#+end_src
+
+The flag may be repeated once per provider type.  The type string must match
+the ~"type"~ field in the corresponding ~__nixhapi.provider~ block of the
+desired-state JSON.
+
+* Wire Protocol
+
+All messages are UTF-8 JSON objects, each on a single line (newline-delimited).
+The CLI sends one request and waits for the matching response before sending
+the next.  The provider binary reads requests until stdin is closed, then
+exits.
+
+#+begin_src text :exports code
+→  one JSON-RPC 2.0 Request object, followed by '\n'
+←  one JSON-RPC 2.0 Response object, followed by '\n'
+#+end_src
+
+** Request envelope
+
+#+begin_src json :exports code
+{
+  "jsonrpc": "2.0",
+  "method":  "<method>",
+  "params":  { ... },
+  "id":      1
+}
+#+end_src
+
+** Success response envelope
+
+#+begin_src json :exports code
+{
+  "jsonrpc": "2.0",
+  "result":  { ... },
+  "id":      1
+}
+#+end_src
+
+** Error response envelope
+
+#+begin_src json :exports code
+{
+  "jsonrpc": "2.0",
+  "error":   { "code": -32000, "message": "human-readable description" },
+  "id":      1
+}
+#+end_src
+
+Use code ~-32000~ for all provider-level errors.  The CLI surfaces the
+~message~ field to the operator.
+
+* Config Representation
+
+Provider configuration originates from ~FieldValue~-typed fields in the
+desired-state JSON (~__nixhapi.provider~ block).  Before sending a request, the
+CLI resolves every ~FieldValue~ to its string value and serialises the result
+as a plain ~{"key": "value"}~ map.  Fields whose value is ~Unmanaged~ are
+omitted entirely.
+
+On the provider side, every received config key should be treated as
+~Managed~.
+
+* Methods
+
+** ~list_live~
+
+Query all currently live resources within this provider's scope.
+
+*Request params*
+
+#+begin_src json :exports code
+{
+  "config":  { "url": "ldap://...", "bindDn": "cn=admin,dc=...", "..." : "..." },
+  "filters": []
+}
+#+end_src
+
+~filters~ is always an empty array in this release.  The field is present so
+that filter support can be added without a protocol change.
+
+*Result*
+
+An opaque JSON object representing live state.  Its structure is
+provider-defined; the CLI passes it back unchanged as the ~live~ parameter in
+the subsequent ~plan~ request.
+
+#+begin_src json :exports code
+{
+  "users":  { "alice": { "cn": ["Alice Smith"], "mail": ["alice@example.org"] } },
+  "groups": {}
+}
+#+end_src
+
+** ~plan~
+
+Compute what would change if the desired state were applied.
+
+*Request params*
+
+#+begin_src json :exports code
+{
+  "desired": { "users": { "alice": { "cn": { "__nixhapi": "managed", "value": "Alice Smith" }, "..." : "..." } }, "groups": {} },
+  "live":    { "users": {}, "groups": {} },
+  "meta":    { "ignore": [], "dependsOn": [] },
+  "config":  { "url": "ldap://...", "..." : "..." }
+}
+#+end_src
+
+~desired~ is the provider's subtree from the Nix-generated JSON with the
+top-level ~__nixhapi~ key already stripped.  Values inside ~desired~ retain
+their ~FieldValue~ encoding (see [[*FieldValue Encoding]]).
+
+~meta~ is the ~NixHapiMeta~ block for this provider instance.  Providers
+typically need ~meta.ignore~ to suppress deletions of externally managed
+resources.
+
+*Result* — a ~ProviderPlan~ object (see [[*ProviderPlan Schema]])
+
+#+begin_src json :exports code
+{
+  "instance_name": "",
+  "provider_type": "ldap",
+  "changes": [
+    {
+      "Add": {
+        "resource_id": "uid=alice,ou=users,dc=example,dc=org",
+        "fields": [
+          { "field": "cn", "from": null, "to": "Alice Smith" }
+        ]
+      }
+    }
+  ],
+  "runbook": [
+    {
+      "description": "Create uid=alice,ou=users,dc=example,dc=org",
+      "command": "ldapadd -H ldap://... -D cn=admin,dc=... -w ***",
+      "body": "dn: uid=alice,...\n...",
+      "operation": { "action": "add", "dn": "uid=alice,..." }
+    }
+  ]
+}
+#+end_src
+
+The CLI sets ~instance_name~ after receiving the response; providers may leave
+it blank.  All sensitive values in ~command~ must be replaced with ~***~ before
+the plan is returned (see [[*Credential Scrubbing]]).
+
+** ~apply~
+
+Execute the plan produced by ~plan~.
+
+*Request params*
+
+#+begin_src json :exports code
+{
+  "plan":   { ... },
+  "config": { "url": "ldap://...", "..." : "..." }
+}
+#+end_src
+
+The ~plan~ field is the exact ~ProviderPlan~ object returned by the preceding
+~plan~ call.  Providers access the ~operation~ field of each ~RunbookStep~ to
+recover the machine-executable representation of each change.
+
+*Result* — an ~ApplyReport~ object
+
+#+begin_src json :exports code
+{
+  "created":  ["uid=alice,ou=users,dc=example,dc=org"],
+  "modified": [],
+  "deleted":  []
+}
+#+end_src
+
+* FieldValue Encoding
+
+Fields in the ~desired~ subtree are tagged JSON objects keyed on ~__nixhapi~:
+
+| Tag                  | Meaning                                              |
+|----------------------+------------------------------------------------------|
+| ~"managed"~          | Always enforce; ~"value"~ holds the string           |
+| ~"initial"~          | Set once if absent; ~"value"~ holds the string       |
+| ~"unmanaged"~        | Never touch; no ~"value"~ key                        |
+| ~"managed-from-path"~| Read from file path on each run; ~"path"~ holds path |
+| ~"initial-from-path"~| Read from file path once; ~"path"~ holds path        |
+| ~"managed-from-env"~ | Read from env var on each run; ~"env"~ holds name    |
+| ~"initial-from-env"~ | Read from env var once; ~"env"~ holds name           |
+
+Examples:
+
+#+begin_src json :exports code
+{ "__nixhapi": "managed",   "value": "Alice Smith" }
+{ "__nixhapi": "initial",   "value": "hunter2"     }
+{ "__nixhapi": "unmanaged"                          }
+{ "__nixhapi": "managed-from-path", "path": "/run/secrets/password" }
+{ "__nixhapi": "initial-from-env",  "env":  "ADMIN_PASSWORD"        }
+#+end_src
+
+* ProviderPlan Schema
+
+#+begin_src json :exports code
+{
+  "instance_name": "string",
+  "provider_type": "string",
+  "changes": [ "<ResourceChange>", "..." ],
+  "runbook": [ "<RunbookStep>",    "..." ]
+}
+#+end_src
+
+** ResourceChange
+
+Changes are tagged by variant name:
+
+#+begin_src json :exports code
+{ "Add":    { "resource_id": "string", "fields":        [ "<FieldDiff>", "..." ] } }
+{ "Modify": { "resource_id": "string", "field_changes": [ "<FieldDiff>", "..." ] } }
+{ "Delete": { "resource_id": "string" } }
+#+end_src
+
+** FieldDiff
+
+#+begin_src json :exports code
+{ "field": "cn", "from": "Old Value", "to": "New Value" }
+#+end_src
+
+Either ~from~ or ~to~ may be ~null~: ~null~ for ~from~ means the field did not
+exist; ~null~ for ~to~ means the field is being removed.
+
+** RunbookStep
+
+#+begin_src json :exports code
+{
+  "description": "Human-readable label shown in plan output",
+  "command":     "CLI command with sensitive values replaced by ***",
+  "body":        "Optional payload such as an LDIF block, or null",
+  "operation":   { }
+}
+#+end_src
+
+~operation~ is a provider-defined opaque value.  The CLI does not interpret it;
+it is serialised into the plan and deserialised back in the ~apply~ request so
+the provider can reconstruct the exact operation to execute.
+
+* Credential Scrubbing
+
+Providers are responsible for redacting sensitive values in ~RunbookStep.command~
+before returning a plan.  Replace each sensitive value with ~***~.  The CLI
+has no visibility into which config fields are sensitive.
+
+* Implementing a Provider in Rust
+
+The ~nix-hapi-lib~ crate ships a ~provider_host::run~ function that handles
+the request loop.  Implement the ~Provider~ trait and call ~run~:
+
+#+begin_src rustic :exports code
+use nix_hapi_lib::provider_host;
+
+fn main() {
+    if let Err(e) = provider_host::run(MyProvider) {
+        eprintln!("my-provider: {e}");
+        std::process::exit(1);
+    }
+}
+#+end_src
+
+The host function reads from stdin, dispatches each request to the appropriate
+trait method, and writes the response to stdout.
+
+* Implementing a Provider in Other Languages
+
+Parse each newline-delimited JSON-RPC request from stdin, dispatch on
+~"method"~, and write a JSON-RPC response followed by a newline to stdout.
+Flush stdout after each response.  Exit cleanly when stdin is closed (EOF).
+
+A minimal skeleton:
+
+#+begin_src python :exports code
+import json, sys
+
+for line in sys.stdin:
+    req = json.loads(line)
+    method = req["method"]
+    params = req.get("params", {})
+    id_    = req.get("id")
+
+    try:
+        if method == "list_live":
+            result = list_live(params["config"], params["filters"])
+        elif method == "plan":
+            result = plan(params["desired"], params["live"],
+                          params["meta"], params["config"])
+        elif method == "apply":
+            result = apply(params["plan"], params["config"])
+        else:
+            raise ValueError(f"unknown method: {method}")
+        resp = {"jsonrpc": "2.0", "result": result, "id": id_}
+    except Exception as exc:
+        resp = {"jsonrpc": "2.0",
+                "error": {"code": -32000, "message": str(exc)}, "id": id_}
+
+    print(json.dumps(resp), flush=True)
+#+end_src

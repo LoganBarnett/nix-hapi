@@ -1,6 +1,7 @@
 use clap::Parser;
 use nix_hapi_lib::{LogFormat, LogLevel};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -24,6 +25,9 @@ pub enum ConfigError {
 
   #[error("Configuration validation failed: {0}")]
   Validation(String),
+
+  #[error("Invalid --provider value {value:?}: expected TYPE=PATH")]
+  InvalidProvider { value: String },
 }
 
 #[derive(Debug, Parser)]
@@ -44,6 +48,10 @@ pub struct CliRaw {
   /// Path to the nix-hapi configuration file (TOML).
   #[arg(short, long, env = "NIX_HAPI_CONFIG")]
   pub config: Option<PathBuf>,
+
+  /// Provider binary registration in TYPE=PATH format; may be repeated.
+  #[arg(long = "provider", value_name = "TYPE=PATH")]
+  pub providers: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -71,6 +79,7 @@ impl ConfigFileRaw {
 pub struct Config {
   pub log_level: LogLevel,
   pub log_format: LogFormat,
+  pub providers: HashMap<String, PathBuf>,
 }
 
 impl Config {
@@ -100,9 +109,21 @@ impl Config {
       .parse::<LogFormat>()
       .map_err(|e| ConfigError::Validation(e.to_string()))?;
 
+    let providers = cli
+      .providers
+      .iter()
+      .map(|s| {
+        let (type_name, path) = s
+          .split_once('=')
+          .ok_or_else(|| ConfigError::InvalidProvider { value: s.clone() })?;
+        Ok((type_name.to_string(), PathBuf::from(path)))
+      })
+      .collect::<Result<HashMap<_, _>, ConfigError>>()?;
+
     Ok(Config {
       log_level,
       log_format,
+      providers,
     })
   }
 }

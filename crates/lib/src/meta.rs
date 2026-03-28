@@ -1,11 +1,11 @@
 use crate::field_value::FieldValue;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Directives from the `__nixhapi` key that modify reconciliation behaviour
 /// for the enclosing scope.  The reconciler strips this key before passing
 /// the subtree to the provider.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct NixHapiMeta {
   /// Provider declaration for the top-level scope.
@@ -29,7 +29,7 @@ pub struct NixHapiMeta {
 /// Provider type and its connection/authentication configuration, all
 /// expressed as `FieldValue`s so credentials can come from paths or
 /// environment variables.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderSpec {
   /// Provider type identifier (e.g. `"ldap"`).
   #[serde(rename = "type")]

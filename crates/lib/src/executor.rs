@@ -45,6 +45,11 @@ pub enum ExecuteError {
     provider_type: String,
   },
 
+  #[error(
+    "Failed to initialize provider for instance {instance:?}: {message}"
+  )]
+  ProviderInit { instance: String, message: String },
+
   #[error("Failed to resolve provider dependency order: {0}")]
   DependencyResolution(#[from] DagError),
 }

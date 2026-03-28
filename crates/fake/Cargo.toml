@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[[bin]]
+name = "nix-hapi-fake"
+path = "src/main.rs"
+
 [dependencies]
 nix-hapi-lib = { workspace = true }
 serde_json = { workspace = true }

@@ -1,16 +1,23 @@
 mod common;
 use common::TestLdapServer;
 
-use nix_hapi_ldap::LdapProvider;
 use nix_hapi_lib::{
   field_value::ResolvedFieldValue,
   meta::NixHapiMeta,
   plan::ResourceChange,
   provider::{Provider, ResolvedConfig},
+  subprocess::SubprocessProvider,
 };
 use std::collections::HashMap;
+use std::path::Path;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn make_provider() -> SubprocessProvider {
+  let binary = env!("CARGO_BIN_EXE_nix-hapi-ldap");
+  SubprocessProvider::spawn("ldap".to_string(), Path::new(binary))
+    .expect("failed to spawn nix-hapi-ldap")
+}
 
 fn make_config(server: &TestLdapServer) -> ResolvedConfig {
   let mut cfg = HashMap::new();
@@ -65,7 +72,8 @@ fn canary_list_live_empty() {
   let server = TestLdapServer::start().expect("start slapd");
   server.initialize().expect("initialize base structure");
 
-  let live = LdapProvider
+  let provider = make_provider();
+  let live = provider
     .list_live(&make_config(&server), &[])
     .expect("list_live");
 
@@ -80,13 +88,14 @@ fn plan_produces_add_for_new_user() {
   let server = TestLdapServer::start().expect("start slapd");
   server.initialize().expect("initialize base structure");
 
+  let provider = make_provider();
   let config = make_config(&server);
-  let live = LdapProvider.list_live(&config, &[]).expect("list_live");
+  let live = provider.list_live(&config, &[]).expect("list_live");
   let desired_state = desired(
     serde_json::json!({"alice": alice("Alice Smith", initial("secret"))}),
   );
 
-  let plan = LdapProvider
+  let plan = provider
     .plan(&desired_state, &live, &NixHapiMeta::default(), &config)
     .expect("plan");
 
@@ -104,21 +113,20 @@ fn apply_creates_user() {
   let server = TestLdapServer::start().expect("start slapd");
   server.initialize().expect("initialize base structure");
 
+  let provider = make_provider();
   let config = make_config(&server);
-  let live = LdapProvider.list_live(&config, &[]).expect("list_live");
+  let live = provider.list_live(&config, &[]).expect("list_live");
   let desired_state = desired(
     serde_json::json!({"alice": alice("Alice Smith", initial("secret"))}),
   );
 
-  let mut plan = LdapProvider
+  let mut plan = provider
     .plan(&desired_state, &live, &NixHapiMeta::default(), &config)
     .expect("plan");
   plan.instance_name = "test".to_string();
-  LdapProvider.apply(&plan, &config).expect("apply");
+  provider.apply(&plan, &config).expect("apply");
 
-  let live_after = LdapProvider
-    .list_live(&config, &[])
-    .expect("list_live after");
+  let live_after = provider.list_live(&config, &[]).expect("list_live after");
   assert!(
     live_after["users"]["alice"].is_object(),
     "Expected alice in live state after apply"
@@ -137,22 +145,23 @@ fn apply_is_idempotent() {
   let server = TestLdapServer::start().expect("start slapd");
   server.initialize().expect("initialize base structure");
 
+  let provider = make_provider();
   let config = make_config(&server);
   let desired_state = desired(
     serde_json::json!({"alice": alice("Alice Smith", initial("secret"))}),
   );
 
   // First apply.
-  let live1 = LdapProvider.list_live(&config, &[]).expect("list_live 1");
-  let mut plan1 = LdapProvider
+  let live1 = provider.list_live(&config, &[]).expect("list_live 1");
+  let mut plan1 = provider
     .plan(&desired_state, &live1, &NixHapiMeta::default(), &config)
     .expect("plan 1");
   plan1.instance_name = "test".to_string();
-  LdapProvider.apply(&plan1, &config).expect("apply 1");
+  provider.apply(&plan1, &config).expect("apply 1");
 
   // Second plan should be empty.
-  let live2 = LdapProvider.list_live(&config, &[]).expect("list_live 2");
-  let plan2 = LdapProvider
+  let live2 = provider.list_live(&config, &[]).expect("list_live 2");
+  let plan2 = provider
     .plan(&desired_state, &live2, &NixHapiMeta::default(), &config)
     .expect("plan 2");
 
@@ -170,25 +179,26 @@ fn managed_field_is_enforced_on_change() {
   let server = TestLdapServer::start().expect("start slapd");
   server.initialize().expect("initialize base structure");
 
+  let provider = make_provider();
   let config = make_config(&server);
 
   // Apply original value.
-  let live1 = LdapProvider.list_live(&config, &[]).expect("list_live 1");
+  let live1 = provider.list_live(&config, &[]).expect("list_live 1");
   let desired1 = desired(
     serde_json::json!({"alice": alice("Alice Smith", initial("secret"))}),
   );
-  let mut plan1 = LdapProvider
+  let mut plan1 = provider
     .plan(&desired1, &live1, &NixHapiMeta::default(), &config)
     .expect("plan 1");
   plan1.instance_name = "test".to_string();
-  LdapProvider.apply(&plan1, &config).expect("apply 1");
+  provider.apply(&plan1, &config).expect("apply 1");
 
   // Plan with updated cn — should detect drift.
-  let live2 = LdapProvider.list_live(&config, &[]).expect("list_live 2");
+  let live2 = provider.list_live(&config, &[]).expect("list_live 2");
   let desired2 = desired(
     serde_json::json!({"alice": alice("Alice Updated", initial("secret"))}),
   );
-  let plan2 = LdapProvider
+  let plan2 = provider
     .plan(&desired2, &live2, &NixHapiMeta::default(), &config)
     .expect("plan 2");
 
@@ -210,26 +220,27 @@ fn initial_field_not_updated_when_present() {
   let server = TestLdapServer::start().expect("start slapd");
   server.initialize().expect("initialize base structure");
 
+  let provider = make_provider();
   let config = make_config(&server);
 
   // Apply with userPassword = initial("first").
-  let live1 = LdapProvider.list_live(&config, &[]).expect("list_live 1");
+  let live1 = provider.list_live(&config, &[]).expect("list_live 1");
   let desired1 = desired(
     serde_json::json!({"alice": alice("Alice Smith", initial("first"))}),
   );
-  let mut plan1 = LdapProvider
+  let mut plan1 = provider
     .plan(&desired1, &live1, &NixHapiMeta::default(), &config)
     .expect("plan 1");
   plan1.instance_name = "test".to_string();
-  LdapProvider.apply(&plan1, &config).expect("apply 1");
+  provider.apply(&plan1, &config).expect("apply 1");
 
   // Change the declared initial value to "second" — must still produce no
   // changes because userPassword is already present in the live entry.
-  let live2 = LdapProvider.list_live(&config, &[]).expect("list_live 2");
+  let live2 = provider.list_live(&config, &[]).expect("list_live 2");
   let desired2 = desired(
     serde_json::json!({"alice": alice("Alice Smith", initial("second"))}),
   );
-  let plan2 = LdapProvider
+  let plan2 = provider
     .plan(&desired2, &live2, &NixHapiMeta::default(), &config)
     .expect("plan 2");
 
@@ -247,22 +258,23 @@ fn user_absent_from_desired_is_deleted() {
   let server = TestLdapServer::start().expect("start slapd");
   server.initialize().expect("initialize base structure");
 
+  let provider = make_provider();
   let config = make_config(&server);
 
   // Apply alice.
-  let live1 = LdapProvider.list_live(&config, &[]).expect("list_live 1");
+  let live1 = provider.list_live(&config, &[]).expect("list_live 1");
   let with_alice = desired(
     serde_json::json!({"alice": alice("Alice Smith", managed("secret"))}),
   );
-  let mut plan1 = LdapProvider
+  let mut plan1 = provider
     .plan(&with_alice, &live1, &NixHapiMeta::default(), &config)
     .expect("plan 1");
   plan1.instance_name = "test".to_string();
-  LdapProvider.apply(&plan1, &config).expect("apply 1");
+  provider.apply(&plan1, &config).expect("apply 1");
 
   // Plan with no users — alice should be marked for deletion.
-  let live2 = LdapProvider.list_live(&config, &[]).expect("list_live 2");
-  let plan2 = LdapProvider
+  let live2 = provider.list_live(&config, &[]).expect("list_live 2");
+  let plan2 = provider
     .plan(
       &desired(serde_json::json!({})),
       &live2,
@@ -289,26 +301,27 @@ fn ignore_pattern_prevents_deletion() {
   let server = TestLdapServer::start().expect("start slapd");
   server.initialize().expect("initialize base structure");
 
+  let provider = make_provider();
   let config = make_config(&server);
 
   // Apply alice.
-  let live1 = LdapProvider.list_live(&config, &[]).expect("list_live 1");
+  let live1 = provider.list_live(&config, &[]).expect("list_live 1");
   let with_alice = desired(
     serde_json::json!({"alice": alice("Alice Smith", managed("secret"))}),
   );
-  let mut plan1 = LdapProvider
+  let mut plan1 = provider
     .plan(&with_alice, &live1, &NixHapiMeta::default(), &config)
     .expect("plan 1");
   plan1.instance_name = "test".to_string();
-  LdapProvider.apply(&plan1, &config).expect("apply 1");
+  provider.apply(&plan1, &config).expect("apply 1");
 
   // Plan with no users but an ignore pattern matching alice's DN.
-  let live2 = LdapProvider.list_live(&config, &[]).expect("list_live 2");
+  let live2 = provider.list_live(&config, &[]).expect("list_live 2");
   let meta = NixHapiMeta {
     ignore: vec!["uid=alice,.*".to_string()],
     ..NixHapiMeta::default()
   };
-  let plan2 = LdapProvider
+  let plan2 = provider
     .plan(&desired(serde_json::json!({})), &live2, &meta, &config)
     .expect("plan 2");
 
@@ -327,13 +340,14 @@ fn runbook_scrubs_bind_password() {
   let server = TestLdapServer::start().expect("start slapd");
   server.initialize().expect("initialize base structure");
 
+  let provider = make_provider();
   let config = make_config(&server);
-  let live = LdapProvider.list_live(&config, &[]).expect("list_live");
+  let live = provider.list_live(&config, &[]).expect("list_live");
   let desired_state = desired(
     serde_json::json!({"alice": alice("Alice Smith", managed("secret"))}),
   );
 
-  let plan = LdapProvider
+  let plan = provider
     .plan(&desired_state, &live, &NixHapiMeta::default(), &config)
     .expect("plan");
 

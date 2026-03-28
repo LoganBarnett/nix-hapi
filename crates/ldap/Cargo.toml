@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[[bin]]
+name = "nix-hapi-ldap"
+path = "src/main.rs"
+
 [dependencies]
 nix-hapi-lib = { workspace = true }
 ldap3 = { workspace = true }

@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -22,7 +22,7 @@ pub enum FieldValueError {
 }
 
 /// How a field value is managed and where its value comes from.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "__nixhapi", rename_all = "kebab-case")]
 pub enum FieldValue {
   /// Always enforce this exact value on every reconciliation.
