@@ -14,6 +14,9 @@
     rust-overlay,
     crane,
   } @ inputs: let
+    # Core helpers are system-independent pure Nix; exposed as self.lib so
+    # flake consumers can access them via inputs.nix-hapi.lib.
+    coreLib = import ./nix/lib/default.nix;
     forAllSystems = nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed;
     overlays = [
       (import rust-overlay)
@@ -164,6 +167,17 @@
         # Update pname to match your project name.
         default = craneLib.buildPackage (commonArgs // {pname = "nix-hapi";});
       });
+
+    # ============================================================================
+    # LIB
+    # ============================================================================
+    lib =
+      coreLib
+      // {
+        # Provider-specific helpers are namespaced under their provider type
+        # to avoid collisions as the provider ecosystem grows.
+        ldap = import ./crates/ldap/nix/default.nix {nixHapiLib = coreLib;};
+      };
 
     # ============================================================================
     # APPS
