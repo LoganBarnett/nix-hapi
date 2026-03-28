@@ -169,16 +169,22 @@ user first.  Add new tasks freely; clean up only in a joint session.
    ~crates/fake/tests/derived_from_integration.rs~ covers single-hop, chain,
    and diamond patterns end-to-end.  48 tests pass.
 
-* derivedFrom plan-phase display                                      :feat:
+* DONE derivedFrom plan-phase display                                 :feat:
   :PROPERTIES:
-  :STATUS:   open
+  :STATUS:   done
   :END:
 
-  The runbook produced by ~plan~ does not yet represent unresolved
-  ~derivedFrom~ fields.  When a field will be computed at apply time, the
-  plan should show ~<derived at apply time>~ rather than omitting the field
-  entirely.  Partially-known inputs (some resolved by earlier waves, some
-  still pending) need a display decision too.
+  At plan time no apply has happened, so all ~derivedFrom~ inputs are
+  unsatisfied.  Rather than omitting these fields silently, the plan diff
+  should show them as a pending change with the input paths visible, e.g.:
+
+  #+begin_example
+  + userId: <derived from uid=.["hr-system"]["users"]["alice"]["uid"]>
+  #+end_example
+
+  Skip-if-not-saturated is already the apply-time behavior (like partial
+  application — nothing executes until all inputs are present).  No
+  distinction between partially vs fully unsatisfied is needed at plan time.
 
 * DONE Provider jq functions                                          :feat:
   :PROPERTIES:

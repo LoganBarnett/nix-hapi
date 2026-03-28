@@ -296,6 +296,20 @@ fn diff_attrs(
           });
         }
       }
+      // DerivedFrom is always treated as a pending change: its final value
+      // is not yet known, so we cannot compare against live state.
+      ResolvedFieldValue::DerivedFrom { inputs } => {
+        let op = if live_entry.contains_key(attr) {
+          AttrModOp::Replace
+        } else {
+          AttrModOp::Add
+        };
+        mods.push(AttrMod {
+          attr: attr.clone(),
+          op,
+          values: vec![format_derived_display(inputs)],
+        });
+      }
     }
   }
 
@@ -307,10 +321,25 @@ fn resolved_to_attr_map(
 ) -> HashMap<String, Vec<String>> {
   resolved
     .iter()
-    .filter_map(|(k, rfv)| {
-      rfv.value().map(|v| (k.clone(), vec![v.to_string()]))
+    .filter_map(|(k, rfv)| match rfv {
+      ResolvedFieldValue::Unmanaged => None,
+      ResolvedFieldValue::DerivedFrom { inputs } => {
+        Some((k.clone(), vec![format_derived_display(inputs)]))
+      }
+      _ => rfv.value().map(|v| (k.clone(), vec![v.to_string()])),
     })
     .collect()
+}
+
+/// Formats a `DerivedFrom` inputs map for display in plan output and LDIF
+/// bodies.  Entries are sorted by alias for deterministic output.
+fn format_derived_display(inputs: &HashMap<String, String>) -> String {
+  let mut parts: Vec<String> = inputs
+    .iter()
+    .map(|(alias, path)| format!("{}={}", alias, path))
+    .collect();
+  parts.sort();
+  format!("<derived from {}>", parts.join(", "))
 }
 
 fn with_user_object_classes(
@@ -379,4 +408,134 @@ fn dn_depth(dn: &str) -> usize {
 
 fn is_ignored(dn: &str, patterns: &[regex::Regex]) -> bool {
   patterns.iter().any(|re| re.is_match(dn))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use nix_hapi_lib::field_value::FieldValue;
+
+  fn empty_live() -> LdapLiveState {
+    LdapLiveState::default()
+  }
+
+  fn make_user(cn: FieldValue, mail: FieldValue, pw: FieldValue) -> UserEntry {
+    UserEntry {
+      cn,
+      mail,
+      user_password: pw,
+      login_shell: None,
+      description: None,
+      extra_fields: HashMap::new(),
+    }
+  }
+
+  #[test]
+  fn derived_from_field_appears_in_plan_diff_with_input_paths() {
+    let inputs =
+      [("uid".to_string(), r#".["hr"]["users"]["alice"]["id"]"#.to_string())]
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+    let user = make_user(
+      FieldValue::DerivedFrom {
+        inputs: inputs.clone(),
+        expression: "mkManaged(.uid)".to_string(),
+      },
+      FieldValue::Managed {
+        value: "alice@example.com".to_string(),
+      },
+      FieldValue::Managed {
+        value: "secret".to_string(),
+      },
+    );
+
+    let mut desired = LdapDesiredState::default();
+    desired.users.insert("alice".to_string(), user);
+
+    let result =
+      diff(&desired, &empty_live(), "dc=example,dc=com", &[]).unwrap();
+
+    assert_eq!(result.resource_changes.len(), 1);
+    let change = &result.resource_changes[0];
+    if let ResourceChange::Add { fields, .. } = change {
+      let cn_diff = fields.iter().find(|f| f.field == "cn").unwrap();
+      assert!(
+        cn_diff
+          .to
+          .as_deref()
+          .unwrap_or("")
+          .contains("<derived from"),
+        "expected derived-from display in 'to', got {:?}",
+        cn_diff.to
+      );
+      assert!(
+        cn_diff
+          .to
+          .as_deref()
+          .unwrap_or("")
+          .contains(r#".["hr"]["users"]["alice"]["id"]"#),
+        "expected input path in display, got {:?}",
+        cn_diff.to
+      );
+    } else {
+      panic!("expected Add change, got {:?}", change);
+    }
+  }
+
+  #[test]
+  fn derived_from_field_always_shown_as_change_when_live_exists() {
+    let inputs =
+      [("uid".to_string(), r#".["hr"]["users"]["alice"]["id"]"#.to_string())]
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+    let user = make_user(
+      FieldValue::DerivedFrom {
+        inputs: inputs.clone(),
+        expression: "mkManaged(.uid)".to_string(),
+      },
+      FieldValue::Managed {
+        value: "alice@example.com".to_string(),
+      },
+      FieldValue::Managed {
+        value: "secret".to_string(),
+      },
+    );
+
+    let mut desired = LdapDesiredState::default();
+    desired.users.insert("alice".to_string(), user);
+
+    // Live state has alice with a cn value already set.
+    let mut live = empty_live();
+    live.users.insert(
+      "alice".to_string(),
+      [
+        ("cn".to_string(), vec!["Alice Smith".to_string()]),
+        ("mail".to_string(), vec!["alice@example.com".to_string()]),
+        ("userPassword".to_string(), vec!["secret".to_string()]),
+      ]
+      .into_iter()
+      .collect(),
+    );
+
+    let result = diff(&desired, &live, "dc=example,dc=com", &[]).unwrap();
+
+    // DerivedFrom cn should always appear as a change even when live has a value.
+    assert_eq!(result.resource_changes.len(), 1);
+    if let ResourceChange::Modify { field_changes, .. } =
+      &result.resource_changes[0]
+    {
+      let cn_change = field_changes.iter().find(|f| f.field == "cn").unwrap();
+      assert!(
+        cn_change
+          .to
+          .as_deref()
+          .unwrap_or("")
+          .contains("<derived from"),
+        "expected derived-from display, got {:?}",
+        cn_change.to
+      );
+    } else {
+      panic!("expected Modify change");
+    }
+  }
 }

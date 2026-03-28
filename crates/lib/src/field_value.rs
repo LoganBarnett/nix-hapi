@@ -20,12 +20,6 @@ pub enum FieldValueError {
     #[source]
     source: std::env::VarError,
   },
-
-  #[error(
-    "DerivedFrom field cannot be resolved directly; \
-     the executor resolves it during reconciliation"
-  )]
-  DerivedFromNotResolved,
 }
 
 /// How a field value is managed and where its value comes from.
@@ -93,8 +87,10 @@ impl FieldValue {
           source,
         })
         .map(ResolvedFieldValue::Initial),
-      FieldValue::DerivedFrom { .. } => {
-        Err(FieldValueError::DerivedFromNotResolved)
+      FieldValue::DerivedFrom { inputs, .. } => {
+        Ok(ResolvedFieldValue::DerivedFrom {
+          inputs: inputs.clone(),
+        })
       }
     }
   }
@@ -106,16 +102,25 @@ pub enum ResolvedFieldValue {
   Managed(String),
   Initial(String),
   Unmanaged,
+  /// Will be computed at apply time from the specified input paths.
+  ///
+  /// Carries the `inputs` map (alias → absolute jq path) for plan display.
+  /// The executor resolves these to a concrete `FieldValue` between waves
+  /// before providers are called during apply.
+  DerivedFrom {
+    inputs: HashMap<String, String>,
+  },
 }
 
 impl ResolvedFieldValue {
-  /// The resolved string value, or `None` for `Unmanaged`.
+  /// The resolved string value, or `None` for `Unmanaged` and `DerivedFrom`.
   pub fn value(&self) -> Option<&str> {
     match self {
       ResolvedFieldValue::Managed(v) | ResolvedFieldValue::Initial(v) => {
         Some(v.as_str())
       }
-      ResolvedFieldValue::Unmanaged => None,
+      ResolvedFieldValue::Unmanaged
+      | ResolvedFieldValue::DerivedFrom { .. } => None,
     }
   }
 
