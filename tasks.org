@@ -204,31 +204,20 @@ user first.  Add new tasks freely; clean up only in a joint session.
 
   No implementation work needed.  Close this task.
 
-* Shadow values — virtual fields for composition                       :feat:
+* DONE Shadow values — virtual fields for composition                  :feat:
   :PROPERTIES:
-  :STATUS:   open-question
+  :STATUS:   resolved-by-design
   :END:
 
-  Open question: do we even need this?
+  Resolved by design — no implementation needed.
 
-  Since providers are not privileged — any key in the tree outside of a
-  provider scope is just data that nobody acts on — a "shadow" value may
-  already be achievable by placing a ~derivedFrom~ field somewhere in the
-  tree that no provider owns.  The provider only sees its own scope; it
-  would never encounter a field declared at an unowned path.
+  Values outside any provider scope are already inert: no provider sees or
+  diffs them.  The ~derivedFrom~ mechanism already covers the composition
+  use case.  The original intra-provider intermediate value scenario (a
+  field inside a provider scope that should not be diffed) is deferred
+  until a concrete provider actually needs it.
 
-  The original design motivation was intra-provider intermediate values
-  (e.g. ~allocatedIp~ hanging off a provider scope, visible to the provider
-  but marked "don't diff").  That use case may still require a
-  ~FieldValue::Shadow~ variant or a pre-processing strip in the provider
-  trait.  Defer until a concrete provider needs it.
-
-* tasks.org cleanup                                                    :meta:
+* DONE tasks.org cleanup                                               :meta:
   :PROPERTIES:
-  :STATUS:   todo
+  :STATUS:   done
   :END:
-
-  Once all tasks above are DONE, do a joint review session to:
-  - Archive completed tasks.
-  - Promote any new discoveries to first-class tasks.
-  - Update ~MEMORY.md~ to reflect the stable state.
