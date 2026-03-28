@@ -68,9 +68,9 @@ user first.  Add new tasks freely; clean up only in a joint session.
   tests in ~dag::tests~ cover chains, diamonds, cycles, error cases, and both
   cycle orientations across the two edge mechanisms.
 
-* derivedFrom — runtime-computed field values                          :feat:
+* DONE derivedFrom — runtime-computed field values                     :feat:
   :PROPERTIES:
-  :STATUS:   design
+  :STATUS:   done
   :END:
 
   Sometimes a field value is not known at Nix evaluation time; it can only be
@@ -106,10 +106,11 @@ user first.  Add new tasks freely; clean up only in a joint session.
    - Providers register additional scoped jq helpers (see [[*Provider jq
      functions]]).
 
-   Nix sugar (via ~mkDerivedFrom~):
+   Nix sugar (via ~mkDerivedFrom~ and ~mkTree~):
    #+begin_src nix :exports code
+   let tree = lib.mkTree config; in
    userId = lib.mkDerivedFrom {
-     inputs = { uid = lib.inputPath config.hr-system.users.alice; };
+     inputs = { uid = tree."hr-system".users.alice.uid.path; };
      expression = "mkManaged(.uid)";
    };
    #+end_src
@@ -143,11 +144,9 @@ user first.  Add new tasks freely; clean up only in a joint session.
 
 ** Open questions
 
-   - ~inputPath~ in Nix: should it be a plain string (jq path) the user writes,
-     or a helper that accepts a Nix attribute reference and derives the path?
-   - Plan-phase display: runbook should show ~<derived at apply time>~ for
-     unresolved ~derivedFrom~ fields; need to decide how to render partially
-     known inputs (some resolved by earlier waves, some still pending).
+   - ~inputPath~ in Nix: resolved.  ~mkTree config~ returns a path-aware
+     proxy; every node carries a ~path~ attribute containing its absolute jq
+     address.  Authors write ~tree."hr-system".users.alice.uid.path~.
 
 ** DONE Implement derivedFrom FieldValue variant
    ~FieldValue::DerivedFrom { inputs, expression }~ added to ~field_value.rs~.
@@ -170,9 +169,20 @@ user first.  Add new tasks freely; clean up only in a joint session.
    ~crates/fake/tests/derived_from_integration.rs~ covers single-hop, chain,
    and diamond patterns end-to-end.  48 tests pass.
 
-* Provider jq functions                                               :feat:
+* derivedFrom plan-phase display                                      :feat:
   :PROPERTIES:
-  :STATUS:   resolved-by-design
+  :STATUS:   open
+  :END:
+
+  The runbook produced by ~plan~ does not yet represent unresolved
+  ~derivedFrom~ fields.  When a field will be computed at apply time, the
+  plan should show ~<derived at apply time>~ rather than omitting the field
+  entirely.  Partially-known inputs (some resolved by earlier waves, some
+  still pending) need a display decision too.
+
+* DONE Provider jq functions                                          :feat:
+  :PROPERTIES:
+  :STATUS:   done
   :END:
 
   Providers are not aware of each other at runtime — no registration
