@@ -32,6 +32,12 @@ pub enum SubprocessError {
 
   #[error("Provider returned error: {0}")]
   ProviderError(String),
+
+  #[error(
+    "Provider process at {path:?} exited before responding \
+     (unexpected EOF on stdout)"
+  )]
+  UnexpectedEof { path: PathBuf },
 }
 
 struct SubprocessInner {
@@ -42,6 +48,7 @@ struct SubprocessInner {
 
 pub struct SubprocessProvider {
   type_name: String,
+  binary_path: PathBuf,
   inner: Mutex<SubprocessInner>,
 }
 
@@ -64,6 +71,7 @@ impl SubprocessProvider {
 
     Ok(Self {
       type_name,
+      binary_path: path.to_owned(),
       inner: Mutex::new(SubprocessInner {
         child,
         stdin,
@@ -102,6 +110,12 @@ impl SubprocessProvider {
       .read_line(&mut response_line)
       .map_err(|source| SubprocessError::Communication { source })?;
 
+    if response_line.trim_end().is_empty() {
+      return Err(SubprocessError::UnexpectedEof {
+        path: self.binary_path.clone(),
+      });
+    }
+
     let response: Value = serde_json::from_str(response_line.trim_end())
       .map_err(SubprocessError::ResponseParse)?;
 
@@ -128,12 +142,31 @@ impl Drop for SubprocessProvider {
   }
 }
 
-/// Converts a `ResolvedConfig` to a plain string map for the wire protocol,
-/// omitting `Unmanaged` fields.
-fn to_wire_config(config: &ResolvedConfig) -> HashMap<String, String> {
+/// Converts a `ResolvedConfig` to the wire format, preserving field value
+/// semantics (managed vs initial).  Unmanaged fields are omitted.
+/// DerivedFrom config fields indicate a bug (config should be resolved before
+/// subprocess calls).
+fn to_wire_config(
+  config: &ResolvedConfig,
+) -> Result<HashMap<String, Value>, SubprocessError> {
+  use crate::field_value::ResolvedFieldValue;
   config
     .iter()
-    .filter_map(|(k, v)| v.value().map(|s| (k.clone(), s.to_string())))
+    .filter_map(|(k, v)| match v {
+      ResolvedFieldValue::Managed(s) => {
+        Some(Ok((k.clone(), json!({"tag": "managed", "value": s}))))
+      }
+      ResolvedFieldValue::Initial(s) => {
+        Some(Ok((k.clone(), json!({"tag": "initial", "value": s}))))
+      }
+      ResolvedFieldValue::Unmanaged => None,
+      ResolvedFieldValue::DerivedFrom { .. } => {
+        Some(Err(SubprocessError::ProviderError(format!(
+          "Config field {k:?} is DerivedFrom, which should have been \
+           resolved before calling the subprocess provider"
+        ))))
+      }
+    })
     .collect()
 }
 
@@ -153,11 +186,10 @@ impl Provider for SubprocessProvider {
     config: &ResolvedConfig,
     _filters: &[Filter],
   ) -> Result<Value, ProviderError> {
+    let wire = to_wire_config(config)
+      .map_err(|e| ProviderError::OperationFailed(e.to_string()))?;
     self
-      .call(
-        "list_live",
-        json!({ "config": to_wire_config(config), "filters": [] }),
-      )
+      .call("list_live", json!({ "config": wire, "filters": [] }))
       .map_err(|e| ProviderError::OperationFailed(e.to_string()))
   }
 
@@ -168,6 +200,8 @@ impl Provider for SubprocessProvider {
     meta: &NixHapiMeta,
     config: &ResolvedConfig,
   ) -> Result<ProviderPlan, ProviderError> {
+    let wire = to_wire_config(config)
+      .map_err(|e| ProviderError::OperationFailed(e.to_string()))?;
     let result = self
       .call(
         "plan",
@@ -175,7 +209,7 @@ impl Provider for SubprocessProvider {
           "desired": desired,
           "live": live,
           "meta": meta,
-          "config": to_wire_config(config),
+          "config": wire,
         }),
       )
       .map_err(|e| ProviderError::OperationFailed(e.to_string()))?;
@@ -189,8 +223,10 @@ impl Provider for SubprocessProvider {
     plan: &ProviderPlan,
     config: &ResolvedConfig,
   ) -> Result<ApplyReport, ProviderError> {
+    let wire = to_wire_config(config)
+      .map_err(|e| ProviderError::OperationFailed(e.to_string()))?;
     let result = self
-      .call("apply", json!({ "plan": plan, "config": to_wire_config(config) }))
+      .call("apply", json!({ "plan": plan, "config": wire }))
       .map_err(|e| ProviderError::OperationFailed(e.to_string()))?;
 
     serde_json::from_value(result)

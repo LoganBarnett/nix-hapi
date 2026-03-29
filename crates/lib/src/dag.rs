@@ -42,6 +42,7 @@ use crate::meta::NixHapiMeta;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
+use tracing::warn;
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -117,12 +118,15 @@ pub enum DagError {
 
   #[error("Cycle detected in provider dependency graph")]
   Cycle,
+
+  #[error("Malformed __nixhapi metadata in instance {instance:?}: {message}")]
+  MetadataParse { instance: String, message: String },
 }
 
 // ── jq evaluation ─────────────────────────────────────────────────────────────
 
 /// Evaluates a jq expression against `input` and returns the first output.
-pub(crate) fn eval_jq_first(
+pub fn eval_jq_first(
   instance: &str,
   expression: &str,
   input: Value,
@@ -181,7 +185,7 @@ pub(crate) fn eval_jq_first(
 /// Extracts the top-level provider instance name from an absolute jq input
 /// path of the form `.[" instance-name "]...`.  Returns `None` for any path
 /// that does not begin with that bracketed pattern.
-fn instance_from_input_path(path: &str) -> Option<&str> {
+pub(crate) fn instance_from_input_path(path: &str) -> Option<&str> {
   path
     .strip_prefix(".[\"")
     .and_then(|s| s.find("\"]").map(|i| &s[..i]))
@@ -255,18 +259,57 @@ fn walk_for_edges(
     }
     Some(Value::Object(_)) => {
       // Meta block: extract dependsOn, then recurse into data children only.
-      let meta: NixHapiMeta =
-        serde_json::from_value(obj["__nixhapi"].clone()).unwrap_or_default();
-      for expr in &meta.depends_on {
-        let output = eval_jq_first(owning_instance, expr, root.clone())?;
-        let dep_name = root
-          .as_object()
-          .and_then(|top| top.iter().find(|(_, v)| *v == &output))
-          .map(|(name, _)| name.clone())
-          .ok_or_else(|| DagError::UnresolvedDependency {
+      let meta: NixHapiMeta = serde_json::from_value(obj["__nixhapi"].clone())
+        .map_err(|e| DagError::MetadataParse {
+          instance: owning_instance.to_string(),
+          message: e.to_string(),
+        })?;
+      for jq_expr in &meta.depends_on {
+        let expr =
+          jq_expr.resolve().map_err(|e| DagError::ExpressionParse {
             instance: owning_instance.to_string(),
-            expression: expr.clone(),
+            expression: format!("{jq_expr:?}"),
+            message: e.to_string(),
           })?;
+        // Fast path: if the expression is a simple .["name"] form, extract
+        // the key directly rather than evaluating and matching by value
+        // equality (which is fragile when two instances have identical
+        // scope content).
+        let dep_name = if let Some(key) = instance_from_input_path(&expr) {
+          if !known_instances.contains(key) {
+            return Err(DagError::UnresolvedDependency {
+              instance: owning_instance.to_string(),
+              expression: expr.clone(),
+            });
+          }
+          key.to_string()
+        } else {
+          // Arbitrary jq expression: evaluate and match against known keys.
+          let output = eval_jq_first(owning_instance, &expr, root.clone())?;
+          let mut matches: Vec<String> = root
+            .as_object()
+            .into_iter()
+            .flat_map(|top| top.iter())
+            .filter(|(_, v)| *v == &output)
+            .map(|(name, _)| name.clone())
+            .collect();
+          if matches.len() > 1 {
+            warn!(
+              expression = ?expr,
+              instance = ?owning_instance,
+              matched = ?matches,
+              "dependsOn expression matched multiple instances; \
+               using first alphabetically",
+            );
+            matches.sort_unstable();
+          }
+          matches.into_iter().next().ok_or_else(|| {
+            DagError::UnresolvedDependency {
+              instance: owning_instance.to_string(),
+              expression: expr.clone(),
+            }
+          })?
+        };
         if dep_name != owning_instance {
           deps_of
             .get_mut(owning_instance)

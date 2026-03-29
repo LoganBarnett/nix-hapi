@@ -1,4 +1,5 @@
 use crate::field_value::FieldValue;
+use crate::jq_expr::JqExpr;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -11,18 +12,20 @@ pub struct NixHapiMeta {
   /// Provider declaration for the top-level scope.
   pub provider: Option<ProviderSpec>,
 
-  /// Regex patterns exempting resources from ownership.  Resources whose
-  /// identifiers match any pattern are not deleted when absent from the
-  /// desired state.
+  /// jq filter expressions exempting resources from ownership.  Resources
+  /// for which any expression evaluates to truthy are not deleted when
+  /// absent from the desired state.  Accepts plain strings (sugar) or
+  /// structured `JqExpr` objects.
   #[serde(default)]
-  pub ignore: Vec<String>,
+  pub ignore: Vec<JqExpr>,
 
   /// jq expressions that each evaluate to a provider-instance subtree that
   /// must be fully applied before this instance begins.  The expressions are
   /// evaluated against the complete top-level JSON blob, so cross-provider
-  /// references work naturally.
+  /// references work naturally.  Accepts plain strings (sugar) or structured
+  /// `JqExpr` objects.
   #[serde(default)]
-  pub depends_on: Vec<String>,
+  pub depends_on: Vec<JqExpr>,
   // listFilter: reserved for next phase
 }
 

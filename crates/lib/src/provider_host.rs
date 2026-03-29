@@ -116,21 +116,49 @@ fn dispatch<P: Provider>(
   }
 }
 
-/// Deserializes a `HashMap<String,String>` from the wire and reconstructs it
-/// as a `ResolvedConfig` with every value treated as `Managed`.
+/// Deserializes the wire config format and reconstructs the correct
+/// `ResolvedFieldValue` variant for each field.
+///
+/// The wire format carries `{"tag": "managed"|"initial", "value": "..."}` per
+/// field.  For backwards compatibility, plain string values are treated as
+/// `Managed`.
 fn parse_config(config_value: &Value) -> Result<ResolvedConfig, String> {
   if config_value.is_null() {
     return Ok(HashMap::new());
   }
-  let map: HashMap<String, String> =
+  let map: HashMap<String, Value> =
     serde_json::from_value(config_value.clone())
       .map_err(|e| format!("failed to parse config: {e}"))?;
-  Ok(
-    map
-      .into_iter()
-      .map(|(k, v)| (k, ResolvedFieldValue::Managed(v)))
-      .collect(),
-  )
+  map
+    .into_iter()
+    .map(|(k, v)| {
+      let rfv = match v {
+        Value::Object(ref obj) => {
+          let tag =
+            obj.get("tag").and_then(|t| t.as_str()).unwrap_or("managed");
+          let value = obj
+            .get("value")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+              format!("config field {k:?}: missing \"value\" in wire object")
+            })?
+            .to_string();
+          match tag {
+            "initial" => ResolvedFieldValue::Initial(value),
+            _ => ResolvedFieldValue::Managed(value),
+          }
+        }
+        // Plain string → backwards compatibility.
+        Value::String(s) => ResolvedFieldValue::Managed(s),
+        _ => {
+          return Err(format!(
+            "config field {k:?}: expected object or string, got {v}"
+          ))
+        }
+      };
+      Ok((k, rfv))
+    })
+    .collect()
 }
 
 fn success_response(id: Value, result: Value) -> Value {
