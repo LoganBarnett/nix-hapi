@@ -317,7 +317,7 @@ let
   config = { "hr-system" = ldap.mkLdapProvider { ... }; };
   tree   = lib.mkTree config;
 in
-  tree."hr-system".users.alice.uid.path
+  tree."hr-system".users.alice.uid.__nixhapi_path
   # => ".[\"hr-system\"][\"users\"][\"alice\"][\"uid\"]"
 #+end_src
 

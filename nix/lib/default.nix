@@ -58,8 +58,8 @@
   # ── Path proxy ────────────────────────────────────────────────────────────────
 
   # Builds a path-aware proxy that mirrors `config`.  Every node in the proxy
-  # carries a `path` attribute containing its absolute jq address from the
-  # top-level JSON root, ready for use as a derivedFrom input.
+  # carries a `__nixhapi_path` attribute containing its absolute jq address
+  # from the top-level JSON root, ready for use as a derivedFrom input.
   #
   # Recursion stops at FieldValue leaves — attrsets whose __nixhapi key is a
   # string discriminant (e.g. "managed", "derived-from").  Plain data objects
@@ -71,7 +71,7 @@
   #     config = { "hr-system" = ldap.mkLdapProvider { ... }; };
   #     tree   = lib.mkTree config;
   #   in
-  #     tree."hr-system".users.alice.uid.path
+  #     tree."hr-system".users.alice.uid.__nixhapi_path
   #     # => ".[\"hr-system\"][\"users\"][\"alice\"][\"uid\"]"
   mkTree = let
     buildNode = prefix: node:
@@ -82,8 +82,8 @@
         builtins.mapAttrs
         (k: v: buildNode "${prefix}[${builtins.toJSON k}]" v)
         node
-        // {path = prefix;}
-      else {path = prefix;};
+        // {__nixhapi_path = prefix;}
+      else {__nixhapi_path = prefix;};
   in
     config:
       builtins.mapAttrs
@@ -107,7 +107,7 @@
   # Example:
   #   let tree = lib.mkTree config; in
   #   userId = lib.mkDerivedFrom {
-  #     inputs     = { uid = tree."hr-system".users.alice.uid.path; };
+  #     inputs     = { uid = tree."hr-system".users.alice.uid.__nixhapi_path; };
   #     expression = "mkManaged(.uid)";
   #   };
   mkDerivedFrom = {
@@ -117,4 +117,42 @@
     __nixhapi = "derived-from";
     inherit inputs expression;
   };
+
+  # ── jq expression helpers ────────────────────────────────────────────────
+
+  # Wraps an inline jq expression in a structured object.  Plain strings are
+  # already valid as jq expressions (syntactic sugar), so this is only needed
+  # when you want to be explicit about the structure.
+  mkJqExpr = value: {
+    __nixhapi = "jq-expr";
+    inherit value;
+  };
+
+  # References a jq expression stored in a file.  The file is read at
+  # reconciliation time by the nix-hapi binary.
+  mkJqFile = path: {
+    __nixhapi = "jq-file";
+    inherit path;
+  };
+
+  # ── Flake tree helpers ──────────────────────────────────────────────────
+
+  # Evaluates a map of tree declarations to JSON strings suitable for piping
+  # to nix-hapi apply.  Consumers declare trees in their flake outputs:
+  #
+  #   nix-hapi-trees = nix-hapi.lib.mkFlakeTrees {
+  #     prod-infra = {
+  #       desiredState = { ... };
+  #       providers = { ldap = "${nix-hapi-ldap}/bin/nix-hapi-ldap"; };
+  #     };
+  #   };
+  #
+  # Then run from CI or a non-NixOS host:
+  #   nix eval --json .#nix-hapi-trees.prod-infra.json | nix-hapi apply --provider ldap=...
+  mkFlakeTrees = trees:
+    builtins.mapAttrs (name: tree: {
+      json = builtins.toJSON tree.desiredState;
+      providers = tree.providers or {};
+    })
+    trees;
 }
