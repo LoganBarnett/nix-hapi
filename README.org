@@ -51,18 +51,23 @@ nix run github:LoganBarnett/nix-hapi -- --help
 
 ** Including in a consumer flake
 
-Add nix-hapi as a flake input and use its lib, packages, and modules:
+Add nix-hapi as a flake input along with any provider flakes you need.
+Providers are separate repositories; currently available:
+
+- [[https://github.com/LoganBarnett/nix-hapi-provider-ldap][nix-hapi-provider-ldap]] — LDAP directories (OpenLDAP, 389ds, etc.)
+- [[https://github.com/LoganBarnett/nix-hapi-provider-porkbun][nix-hapi-provider-porkbun]] — DNS records via Porkbun
 
 #+begin_src nix :exports code
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/25.11";
     nix-hapi.url = "github:LoganBarnett/nix-hapi";
+    nix-hapi-provider-ldap.url = "github:LoganBarnett/nix-hapi-provider-ldap";
   };
 
-  outputs = { self, nixpkgs, nix-hapi, ... }: let
+  outputs = { self, nixpkgs, nix-hapi, nix-hapi-provider-ldap, ... }: let
     lib  = nix-hapi.lib;
-    ldap = lib.ldap;
+    ldap = nix-hapi-provider-ldap.lib;
   in {
     # Define desired state as a flake attribute.
     nix-hapi-trees = lib.mkFlakeTrees {
@@ -81,7 +86,7 @@ Add nix-hapi as a flake input and use its lib, packages, and modules:
             };
           };
         };
-        providers.ldap = "${nix-hapi.packages.x86_64-linux.default}/bin/nix-hapi-ldap";
+        providers.ldap = "${nix-hapi-provider-ldap.packages.x86_64-linux.default}/bin/nix-hapi-ldap";
       };
     };
 
@@ -95,7 +100,7 @@ Add nix-hapi as a flake input and use its lib, packages, and modules:
             package = nix-hapi.packages.x86_64-linux.default;
             trees.ldap-service-users = {
               desiredState = { ... };
-              providers.ldap = "${nix-hapi.packages.x86_64-linux.default}/bin/nix-hapi-ldap";
+              providers.ldap = "${nix-hapi-provider-ldap.packages.x86_64-linux.default}/bin/nix-hapi-ldap";
               schedule = "daily";
             };
           };
@@ -155,7 +160,7 @@ services.nix-hapi = {
         };
       };
     };
-    providers.ldap = "${inputs.nix-hapi.packages.${system}.default}/bin/nix-hapi-ldap";
+    providers.ldap = "${inputs.nix-hapi-provider-ldap.packages.${system}.default}/bin/nix-hapi-ldap";
     # Run daily, or omit for oneshot-after-boot only.
     schedule = "daily";
   };

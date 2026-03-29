@@ -71,7 +71,6 @@
       pkgs.cargo-sweep
       pkgs.pkg-config
       pkgs.openssl
-      pkgs.openldap
       pkgs.jq
       pkgs.d2
       # Unified formatter
@@ -85,8 +84,6 @@
       default = pkgs.mkShell {
         buildInputs = devPackages pkgs;
         shellHook = ''
-          # slapd lives under libexec/, not bin/, so it needs an explicit PATH entry.
-          export PATH="${pkgs.openldap}/libexec:$PATH"
           echo "nix-hapi development environment"
           echo ""
           echo "Available Cargo packages (use 'cargo build -p <name>'):"
@@ -172,13 +169,7 @@
     # ============================================================================
     # LIB
     # ============================================================================
-    lib =
-      coreLib
-      // {
-        # Provider-specific helpers are namespaced under their provider type
-        # to avoid collisions as the provider ecosystem grows.
-        ldap = import ./crates/ldap/nix/default.nix {nixHapiLib = coreLib;};
-      };
+    lib = coreLib;
 
     # ============================================================================
     # MODULES

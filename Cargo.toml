@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "crates/cli",
     "crates/fake",
-    "crates/ldap",
     "crates/lib",
 ]
 
@@ -40,12 +39,6 @@ thiserror = "2.0"
 reqwest = { version = "0.12", features = ["json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
-# LDAP client
-ldap3 = "0.11"
-
-# Pattern matching for __nixhapi.ignore
-regex = "1"
-
 # jq expression evaluation for dependsOn DAG resolution
 jaq-core = "2"
 jaq-std = "2"
@@ -57,7 +50,6 @@ tempfile = "3"
 # Crates in this workspace
 nix-hapi-fake = { path = "crates/fake" }
 nix-hapi-lib = { path = "crates/lib" }
-nix-hapi-ldap = { path = "crates/ldap" }
 
 # ============================================================================
 # BUILD PROFILES

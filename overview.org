@@ -257,8 +257,7 @@ The first milestone establishes the core that everything else builds on:
 3. The ~__nixhapi~ meta namespace for exemptions and assertions.
 4. Plan mode with human-readable diff output.
 5. Pre-apply assertion evaluation.
-6. At least one real provider (DNS via Porkbun, or LDAP rolled in from
-   ldap-reconciler) to validate the provider interface.
+6. Real providers (LDAP, Porkbun DNS) to validate the provider interface.
 
 Deferred to later phases:
 
@@ -279,8 +278,8 @@ live in two places:
 
 - ~nix/lib/default.nix~ — provider-agnostic helpers, exposed as
   ~inputs.nix-hapi.lib~.
-- ~crates/<provider>/nix/default.nix~ — provider-specific helpers,
-  exposed under ~inputs.nix-hapi.lib.<provider>~.
+- Provider-specific helpers live in their own repositories and are
+  exposed under ~inputs.nix-hapi-provider-<name>.lib~.
 
 ** Field value constructors (~nix/lib/default.nix~)
 
@@ -324,14 +323,12 @@ in
 The path strings produced by ~mkTree~ are the correct input format for
 ~mkDerivedFrom~'s ~inputs~ map and for ~mkDependsOn~.
 
-** LDAP provider helpers (~crates/ldap/nix/default.nix~)
+** Provider-specific helpers
 
-Accessed via ~inputs.nix-hapi.lib.ldap~.
-
-| Constructor          | Emits                                                          |
-|----------------------+----------------------------------------------------------------|
-| ~mkLdapProvider {...}~ | Top-level provider scope with ~__nixhapi~ meta block.        |
-| ~mkLdapUser {...}~     | An LDAP user entry with required inetOrgPerson attributes.   |
+Providers ship their own ~mk*~ helpers in their flake's ~lib~ output.  For
+example, the [[https://github.com/LoganBarnett/nix-hapi-provider-ldap][LDAP provider]] exposes ~mkLdapProvider~ and ~mkLdapUser~ via
+~inputs.nix-hapi-provider-ldap.lib~.  See each provider's documentation for
+its available constructors.
 
 ** Provider naming convention
 
@@ -339,7 +336,7 @@ Any ~mk*~ function emitting a structure with a ~__nixhapi~ key follows
 these rules:
 
 1. The function name mirrors the JSON tag in PascalCase with an ~mk~
-   prefix: ~mkManaged~, ~mkInitial~, ~mkLdapProvider~.
+   prefix: ~mkManaged~, ~mkInitial~, ~mkDerivedFrom~.
 2. Required fields are positional or named arguments; optional fields
    default to safe values (~ignore = []~, ~dependsOn = []~, etc.).
 3. The function never performs I/O.  It is a pure Nix expression that

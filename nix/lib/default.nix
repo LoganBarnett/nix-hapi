@@ -143,7 +143,7 @@
   #   nix-hapi-trees = nix-hapi.lib.mkFlakeTrees {
   #     prod-infra = {
   #       desiredState = { ... };
-  #       providers = { ldap = "${nix-hapi-ldap}/bin/nix-hapi-ldap"; };
+  #       providers = { ldap = "${nix-hapi-provider-ldap}/bin/nix-hapi-ldap"; };
   #     };
   #   };
   #
