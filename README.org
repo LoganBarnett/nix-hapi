@@ -49,7 +49,123 @@ The resulting binary is at ~target/release/nix-hapi~.
 nix run github:LoganBarnett/nix-hapi -- --help
 #+end_src
 
+** Including in a consumer flake
+
+Add nix-hapi as a flake input and use its lib, packages, and modules:
+
+#+begin_src nix :exports code
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/25.11";
+    nix-hapi.url = "github:LoganBarnett/nix-hapi";
+  };
+
+  outputs = { self, nixpkgs, nix-hapi, ... }: let
+    lib  = nix-hapi.lib;
+    ldap = lib.ldap;
+  in {
+    # Define desired state as a flake attribute.
+    nix-hapi-trees = lib.mkFlakeTrees {
+      prod-ldap = {
+        desiredState = {
+          prod-ldap = ldap.mkLdapProvider {
+            url          = lib.mkManaged "ldap://ldap.example.org";
+            baseDn       = lib.mkManaged "dc=example,dc=org";
+            bindDn       = lib.mkManaged "cn=admin,dc=example,dc=org";
+            bindPassword = lib.mkManagedFromPath "/run/secrets/ldap-pw";
+            users.alice = ldap.mkLdapUser {
+              cn           = lib.mkManaged "Alice Smith";
+              sn           = lib.mkManaged "Smith";
+              mail         = lib.mkManaged "alice@example.org";
+              userPassword = lib.mkInitialFromPath "/run/secrets/alice-pw";
+            };
+          };
+        };
+        providers.ldap = "${nix-hapi.packages.x86_64-linux.default}/bin/nix-hapi-ldap";
+      };
+    };
+
+    # NixOS module usage for a host that runs nix-hapi as a service.
+    nixosConfigurations.my-host = nixpkgs.lib.nixosSystem {
+      modules = [
+        nix-hapi.nixosModules.default
+        {
+          services.nix-hapi = {
+            enable = true;
+            package = nix-hapi.packages.x86_64-linux.default;
+            trees.ldap-service-users = {
+              desiredState = { ... };
+              providers.ldap = "${nix-hapi.packages.x86_64-linux.default}/bin/nix-hapi-ldap";
+              schedule = "daily";
+            };
+          };
+        }
+      ];
+    };
+  };
+}
+#+end_src
+
 * Usage
+
+** On-demand execution
+
+Evaluate a tree from a consumer flake and pipe it to the reconciler:
+
+#+begin_src sh :exports code
+nix eval --json .#nix-hapi-trees.prod-ldap.json \
+  | nix-hapi apply --provider ldap=/path/to/nix-hapi-ldap
+#+end_src
+
+Or preview changes first with ~plan~:
+
+#+begin_src sh :exports code
+nix eval --json .#nix-hapi-trees.prod-ldap.json \
+  | nix-hapi plan --provider ldap=/path/to/nix-hapi-ldap
+#+end_src
+
+This works from CI, from a developer workstation, or from any host with Nix
+installed — no NixOS module required.
+
+** NixOS / nix-darwin service
+
+The ~services.nix-hapi~ module creates a systemd service (or launchd daemon on
+macOS) for each declared tree.  This is ideal for host-local reconciliation,
+for example maintaining LDAP service users on the same host running the LDAP
+server:
+
+#+begin_src nix :exports code
+services.nix-hapi = {
+  enable = true;
+  package = inputs.nix-hapi.packages.${system}.default;
+  trees.ldap-service-users = {
+    desiredState = {
+      local-ldap = ldap.mkLdapProvider {
+        url          = lib.mkManaged "ldap://localhost";
+        baseDn       = lib.mkManaged "dc=example,dc=org";
+        bindDn       = lib.mkManaged "cn=admin,dc=example,dc=org";
+        bindPassword = lib.mkManagedFromPath "/run/secrets/ldap-admin-pw";
+        users = {
+          gitea-service = ldap.mkLdapUser {
+            cn           = lib.mkManaged "Gitea Service Account";
+            sn           = lib.mkManaged "Service";
+            mail         = lib.mkManaged "gitea-svc@example.org";
+            userPassword = lib.mkManagedFromPath "/run/secrets/gitea-ldap-pw";
+          };
+        };
+      };
+    };
+    providers.ldap = "${inputs.nix-hapi.packages.${system}.default}/bin/nix-hapi-ldap";
+    # Run daily, or omit for oneshot-after-boot only.
+    schedule = "daily";
+  };
+};
+#+end_src
+
+Each tree becomes:
+- A JSON file at ~/etc/nix-hapi/<name>.json~.
+- A oneshot systemd service ~nix-hapi-<name>.service~ (or launchd daemon).
+- An optional systemd timer ~nix-hapi-<name>.timer~ when ~schedule~ is set.
 
 ** Plan mode
 
@@ -99,10 +215,21 @@ userPassword = mkInitial (fromPath "/run/credentials/alice.service/ldap-password
 
 nix-hapi assumes it owns everything within the declared scope.  Resources
 present in the live API but absent from the Nix expression are candidates for
-deletion.  Exemptions are declared explicitly:
+deletion.  Exemptions are declared via jq filter expressions:
 
 #+begin_src nix :exports code
-__nixhapi.ignore = [ "_acme-challenge\\..*" ];
+__nixhapi.ignore = [
+  # Each expression receives . = {"key": "<id>", "resource_id": "<id>"}.
+  # Truthy output means the resource is exempt from deletion.
+  ''.resource_id | test("^uid=placeholder,")''
+  ''.key | startswith("_acme")''
+];
+#+end_src
+
+For file-based expressions, use ~mkJqFile~:
+
+#+begin_src nix :exports code
+__nixhapi.ignore = [ (lib.mkJqFile ./ignore-acme.jq) ];
 #+end_src
 
 ** Cross-provider dependencies and parallel execution

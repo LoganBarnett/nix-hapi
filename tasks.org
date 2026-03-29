@@ -110,7 +110,7 @@ user first.  Add new tasks freely; clean up only in a joint session.
    #+begin_src nix :exports code
    let tree = lib.mkTree config; in
    userId = lib.mkDerivedFrom {
-     inputs = { uid = tree."hr-system".users.alice.uid.path; };
+     inputs = { uid = tree."hr-system".users.alice.uid.__nixhapi_path; };
      expression = "mkManaged(.uid)";
    };
    #+end_src
@@ -146,7 +146,7 @@ user first.  Add new tasks freely; clean up only in a joint session.
 
    - ~inputPath~ in Nix: resolved.  ~mkTree config~ returns a path-aware
      proxy; every node carries a ~path~ attribute containing its absolute jq
-     address.  Authors write ~tree."hr-system".users.alice.uid.path~.
+     address.  Authors write ~tree."hr-system".users.alice.uid.__nixhapi_path~.
 
 ** DONE Implement derivedFrom FieldValue variant
    ~FieldValue::DerivedFrom { inputs, expression }~ added to ~field_value.rs~.
@@ -158,7 +158,7 @@ user first.  Add new tasks freely; clean up only in a joint session.
    carries a ~path~ attribute containing its absolute jq address.  FieldValue
    leaves (string ~__nixhapi~ discriminant) stop recursion.
    ~mkDerivedFrom { inputs, expression }~ emits the ~derived-from~ JSON shape.
-   Usage: ~tree."hr-system".users.alice.uid.path~ produces
+   Usage: ~tree."hr-system".users.alice.uid.__nixhapi_path~ produces
    ~.[\"hr-system\"][\"users\"][\"alice\"][\"uid\"]~.
 
 ** DONE Wire derivedFrom resolution into executor (post-refactor)
@@ -221,3 +221,166 @@ user first.  Add new tasks freely; clean up only in a joint session.
   :PROPERTIES:
   :STATUS:   done
   :END:
+
+* TODO split_scope silently swallows malformed __nixhapi metadata  :bug:core:
+  :PROPERTIES:
+  :ID:       1.1
+  :END:
+
+  ~executor.rs:64-68~: ~.ok()~ on ~serde_json::from_value~ means a malformed
+  ~__nixhapi~ object (e.g. ~"provider": 42~) is silently treated as having no
+  metadata.  Same pattern in ~dag.rs:258-259~ (~walk_for_edges~).
+
+  - Test first: construct a scope with invalid ~__nixhapi~ shape, assert error.
+  - Fix: add ~ExecuteError::MetadataParse { instance, message }~, propagate.
+  - Fix ~dag.rs~: add ~DagError::MetadataParse { instance, message }~.
+
+* TODO plan_instance_inner panics on missing instance              :bug:core:
+  :PROPERTIES:
+  :ID:       1.3
+  :END:
+
+  ~executor.rs:97~: ~root.get(instance_name).expect("instance must exist")~
+  panics defensively.
+
+  - Fix: replace ~.expect(...)~ with ~.ok_or_else(|| ExecuteError::MissingInstance { ... })?~.
+  - Add ~MissingInstance { instance: String }~ to ~ExecuteError~.
+
+* TODO Subprocess EOF produces confusing error                     :bug:core:
+  :PROPERTIES:
+  :ID:       1.6
+  :END:
+
+  ~subprocess.rs:99-106~: when a provider binary crashes, ~read_line~ returns
+  an empty string, parsed by ~serde_json::from_str("")~ as a confusing JSON
+  error.
+
+  - Test: spawn with ~/usr/bin/true~, assert EOF-specific error message.
+  - Fix: check for empty line, return ~SubprocessError::UnexpectedEof~.
+
+* TODO dependsOn value-equality matching is fragile               :bug:core:
+  :PROPERTIES:
+  :ID:       1.2
+  :END:
+
+  ~dag.rs:262-269~: resolution evaluates jq, then searches every top-level
+  value for equality.  Fails with duplicate scope content; O(n) per dep.
+
+  - Test: three instances where ~a~ and ~b~ have identical scope content,
+    ~c~ depends on ~.["a"]~.  Assert resolved dependency is ~"a"~ not ~"b"~.
+  - Fix: extract key from expression via ~instance_from_input_path~ and verify
+    the instance exists.  Fall back to eval for arbitrary jq.  Warn on
+    ambiguity.
+
+* TODO execute_apply_waves discards reports on partial failure     :bug:core:
+  :PROPERTIES:
+  :ID:       1.4
+  :END:
+
+  ~executor.rs:240-252~: when one instance in a wave fails, ~result?~ discards
+  successful reports.
+
+  - Test: two-instance wave, one provider errors.  Assert successful report is
+    still accessible.
+  - Fix: collect all results, partition successes/failures.  Push successes
+    into reports; return ~ExecuteError::PartialWaveFailure~ wrapping both.
+
+* TODO Subprocess wire protocol loses Initial/Managed semantics    :bug:core:
+  :PROPERTIES:
+  :ID:       1.5
+  :END:
+
+  ~subprocess.rs:133-138~ and ~provider_host.rs:121-134~: ~to_wire_config~
+  flattens to plain strings; ~parse_config~ reconstructs all as ~Managed~.
+
+  - Test: pass ~Initial~ config, assert provider side retains ~Initial~.
+  - Fix: wire format carries ~{tag, value}~ objects.  ~DerivedFrom~ config
+    fields produce an error.
+
+* TODO Executor test coverage                                     :test:core:
+  :PROPERTIES:
+  :ID:       1.7
+  :END:
+
+  Zero unit or integration tests for ~execute_plan_waves~ / ~execute_apply_waves~.
+
+  - Single instance, empty plan → no apply.
+  - Single instance, non-empty plan → apply called, report returned.
+  - Two-wave diamond → wave ordering respected.
+  - Missing ~__nixhapi.provider~ → ~MissingProvider~ error.
+  - Provider that returns error from ~plan~ → ~ProviderOperation~ error.
+  - Provider that returns error from ~apply~ → ~ProviderOperation~ error.
+
+* TODO DerivedFrom plan-time saturation check                    :feat:core:
+  :PROPERTIES:
+  :ID:       2.1
+  :END:
+
+  At plan time, validate that every ~DerivedFrom~ node's inputs will be
+  satisfied by the DAG ordering.
+
+  - New file: ~crates/lib/src/saturation.rs~.
+  - ~check_derived_from_saturation(root, waves) -> Result<(), SaturationError>~.
+  - Call from ~execute_plan_waves~ after computing waves.
+  - Tests: valid diamond, same-wave reference (error), missing instance (error),
+    self-reference (ok).
+
+* TODO mkTree path key collision                                   :bug:nix:
+  :PROPERTIES:
+  :ID:       4.1
+  :END:
+
+  ~nix/lib/default.nix:85~: ~mkTree~ adds ~path~ via ~// { path = prefix; }~.
+  Shadows any user data key named ~path~.
+
+  - Fix: rename to ~__nixhapi_path~.
+  - Update ~mkDerivedFrom~ examples and docs.
+
+* TODO JqExpr type — inline string or file reference             :feat:core:
+  :PROPERTIES:
+  :ID:       6.2
+  :END:
+
+  New type in ~crates/lib/src/jq_expr.rs~: ~JqExpr~ enum with ~Inline~,
+  ~Structured~ variants (~jq-expr~, ~jq-file~).  Plain JSON string
+  deserializes as ~JqExpr::Inline~.
+
+  - Update ~NixHapiMeta.depends_on~ from ~Vec<String>~ to ~Vec<JqExpr>~.
+  - Update ~NixHapiMeta.ignore~ to ~Vec<JqExpr>~.
+  - Add Nix helpers: ~mkJqExpr~, ~mkJqFile~.
+
+* TODO jq-based ignores replacing regex                          :feat:core:
+  :PROPERTIES:
+  :ID:       6.1
+  :BLOCKED_BY: 6.2
+  :END:
+
+  Replace regex ignore patterns with jq filter expressions evaluated against
+  live-state tree.  Core reconciler evaluates ignores; providers never see them.
+
+  - Remove ~compile_ignore_patterns~ from LDAP provider.
+  - Move ignore evaluation to executor/core.
+  - Migration: regex patterns become jq expressions with ~test()~.
+
+* TODO NixOS/nix-darwin module for host-specific trees             :feat:nix:
+  :PROPERTIES:
+  :ID:       3.1
+  :END:
+
+  ~nix/modules/default.nix~: ~services.nix-hapi~ with per-tree options
+  (~desiredState~, ~schedule~, ~providers~).  Generate systemd services/timers.
+
+* TODO Flake-level nix-hapi-trees for non-host trees               :feat:nix:
+  :PROPERTIES:
+  :ID:       3.2
+  :END:
+
+  ~mkFlakeTrees~ helper in ~nix/lib/default.nix~.  Consumers declare trees in
+  flake outputs, run from CI or non-NixOS hosts.
+
+* TODO Wire up flake outputs for modules and lib                   :feat:nix:
+  :PROPERTIES:
+  :ID:       3.3
+  :END:
+
+  Export ~nixosModules.default~ and updated ~lib~ from ~flake.nix~.
