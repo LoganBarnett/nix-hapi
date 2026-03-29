@@ -1,8 +1,12 @@
 # NixOS module for nix-hapi declarative reconciliation.
 #
-# Each tree produces a oneshot systemd service that reads the evaluated
-# desired state from /etc/nix-hapi/<name>.json and runs nix-hapi apply.
+# Each tree produces a oneshot systemd service that pipes the evaluated
+# desired state JSON directly from the Nix store and runs nix-hapi apply.
 # An optional schedule produces a timer.
+#
+# The store path for each tree's JSON is exposed via
+# config.services.nix-hapi.jsonFiles.<name> so callers can use it as a
+# restartTrigger without needing to go through environment.etc.
 #
 # Example:
 #
@@ -42,7 +46,7 @@
         default = {};
         description = ''
           Map of provider type name to binary path.  Each entry becomes a
-          --provider TYPE=PATH argument to nix-hapi apply.
+          --provider TYPE=PATH argument passed to nix-hapi.
         '';
       };
     };
@@ -54,7 +58,7 @@
       lib.mapAttrsToList (type: path: "--provider ${type}=${path}") providers
     );
 
-  # Generate the JSON file for a tree.
+  # Generate the Nix store JSON file for a tree.
   treeJson = name: tree:
     pkgs.writeText "nix-hapi-${name}.json" (builtins.toJSON tree.desiredState);
 in {
@@ -72,15 +76,21 @@ in {
       default = {};
       description = "Named reconciliation trees.";
     };
+
+    jsonFiles = lib.mkOption {
+      type = lib.types.attrsOf lib.types.path;
+      readOnly = true;
+      description = ''
+        Read-only map of tree name to its desired-state JSON store path.
+        Use as a restartTrigger so the service re-runs whenever the tree
+        content changes.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
-    # Write the JSON desired state for each tree.
-    environment.etc = lib.mapAttrs' (name: tree:
-      lib.nameValuePair "nix-hapi/${name}.json" {
-        source = treeJson name tree;
-      })
-    cfg.trees;
+    services.nix-hapi.jsonFiles =
+      lib.mapAttrs (name: tree: treeJson name tree) cfg.trees;
 
     # Oneshot service per tree.
     systemd.services = lib.mapAttrs' (name: tree:
@@ -90,7 +100,7 @@ in {
         wants = ["network-online.target"];
         serviceConfig = {
           Type = "oneshot";
-          ExecStart = "${cfg.package}/bin/nix-hapi ${providerFlags tree.providers} apply < /etc/nix-hapi/${name}.json";
+          ExecStart = "${cfg.package}/bin/nix-hapi ${providerFlags tree.providers} apply < ${treeJson name tree}";
         };
         wantedBy =
           if tree.schedule == null
