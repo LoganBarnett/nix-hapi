@@ -174,8 +174,8 @@
     # ============================================================================
     # MODULES
     # ============================================================================
-    nixosModules.default = import ./nix/modules/default.nix;
-    darwinModules.default = import ./nix/modules/default.nix;
+    nixosModules.default = import ./nix/modules/nixos.nix;
+    darwinModules.default = import ./nix/modules/darwin.nix;
 
     # ============================================================================
     # APPS
