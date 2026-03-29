@@ -69,14 +69,14 @@ Add nix-hapi as a flake input and use its lib, packages, and modules:
       prod-ldap = {
         desiredState = {
           prod-ldap = ldap.mkLdapProvider {
-            url          = lib.mkManaged "ldap://ldap.example.org";
-            baseDn       = lib.mkManaged "dc=example,dc=org";
-            bindDn       = lib.mkManaged "cn=admin,dc=example,dc=org";
+            url          = "ldap://ldap.example.org";
+            baseDn       = "dc=example,dc=org";
+            bindDn       = "cn=admin,dc=example,dc=org";
             bindPassword = lib.mkManagedFromPath "/run/secrets/ldap-pw";
             users.alice = ldap.mkLdapUser {
-              cn           = lib.mkManaged "Alice Smith";
-              sn           = lib.mkManaged "Smith";
-              mail         = lib.mkManaged "alice@example.org";
+              cn           = "Alice Smith";
+              sn           = "Smith";
+              mail         = "alice@example.org";
               userPassword = lib.mkInitialFromPath "/run/secrets/alice-pw";
             };
           };
@@ -141,15 +141,15 @@ services.nix-hapi = {
   trees.ldap-service-users = {
     desiredState = {
       local-ldap = ldap.mkLdapProvider {
-        url          = lib.mkManaged "ldap://localhost";
-        baseDn       = lib.mkManaged "dc=example,dc=org";
-        bindDn       = lib.mkManaged "cn=admin,dc=example,dc=org";
+        url          = "ldap://localhost";
+        baseDn       = "dc=example,dc=org";
+        bindDn       = "cn=admin,dc=example,dc=org";
         bindPassword = lib.mkManagedFromPath "/run/secrets/ldap-admin-pw";
         users = {
           gitea-service = ldap.mkLdapUser {
-            cn           = lib.mkManaged "Gitea Service Account";
-            sn           = lib.mkManaged "Service";
-            mail         = lib.mkManaged "gitea-svc@example.org";
+            cn           = "Gitea Service Account";
+            sn           = "Service";
+            mail         = "gitea-svc@example.org";
             userPassword = lib.mkManagedFromPath "/run/secrets/gitea-ldap-pw";
           };
         };

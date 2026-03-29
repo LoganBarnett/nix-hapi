@@ -420,7 +420,7 @@ their respective ~lib~ attributes:
       config = { ... };
     in {
       prod-myprov = myprov.mkMyProvider {
-        url = lib.mkManaged "https://api.example.com";
+        url = "https://api.example.com";
         # provider-specific mk* helpers handle dependsOn/derivedFrom wiring
       };
     };
