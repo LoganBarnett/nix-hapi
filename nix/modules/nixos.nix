@@ -100,7 +100,8 @@ in {
         wants = ["network-online.target"];
         serviceConfig = {
           Type = "oneshot";
-          ExecStart = "${cfg.package}/bin/nix-hapi ${providerFlags tree.providers} apply < ${treeJson name tree}";
+          ExecStart = "${cfg.package}/bin/nix-hapi ${providerFlags tree.providers} apply";
+          StandardInput = "file:${treeJson name tree}";
         };
         wantedBy =
           if tree.schedule == null
