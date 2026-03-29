@@ -318,7 +318,9 @@ fn ignore_pattern_prevents_deletion() {
   // Plan with no users but an ignore pattern matching alice's DN.
   let live2 = provider.list_live(&config, &[]).expect("list_live 2");
   let meta = NixHapiMeta {
-    ignore: vec!["uid=alice,.*".to_string()],
+    ignore: vec![nix_hapi_lib::jq_expr::JqExpr::Inline(
+      r#".resource_id | test("^uid=alice,")"#.to_string(),
+    )],
     ..NixHapiMeta::default()
   };
   let plan2 = provider

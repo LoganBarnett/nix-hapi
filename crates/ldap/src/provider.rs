@@ -11,7 +11,6 @@ use ldap3::Mod;
 use nix_hapi_lib::meta::NixHapiMeta;
 use nix_hapi_lib::plan::{ApplyReport, ProviderPlan};
 use nix_hapi_lib::provider::{Filter, Provider, ProviderError, ResolvedConfig};
-use regex::Regex;
 use std::collections::HashSet;
 use tracing::info;
 
@@ -57,10 +56,20 @@ impl Provider for LdapProvider {
     let live_state: LdapLiveState = serde_json::from_value(live.clone())
       .map_err(|e| ProviderError::LiveStateParse(e.to_string()))?;
 
-    let ignore_patterns = compile_ignore_patterns(&meta.ignore)?;
+    let ignore_exprs: Vec<String> = meta
+      .ignore
+      .iter()
+      .map(|jq| {
+        jq.resolve().map_err(|e| {
+          ProviderError::OperationFailed(format!(
+            "Failed to resolve ignore expression: {e}"
+          ))
+        })
+      })
+      .collect::<Result<_, _>>()?;
 
     let ldap_diff =
-      diff(&desired_state, &live_state, &ldap_config.base_dn, &ignore_patterns)
+      diff(&desired_state, &live_state, &ldap_config.base_dn, &ignore_exprs)
         .map_err(|e: ReconcileError| {
           ProviderError::OperationFailed(e.to_string())
         })?;
@@ -194,22 +203,6 @@ fn rdn_value(dn: &str, attr: &str) -> Option<String> {
     let (k, v) = rdn.split_once('=')?;
     (k.trim().eq_ignore_ascii_case(attr)).then(|| v.trim().to_string())
   })
-}
-
-fn compile_ignore_patterns(
-  patterns: &[String],
-) -> Result<Vec<Regex>, ProviderError> {
-  patterns
-    .iter()
-    .map(|p| {
-      Regex::new(p).map_err(|e| {
-        ProviderError::OperationFailed(format!(
-          "Invalid ignore pattern {:?}: {}",
-          p, e
-        ))
-      })
-    })
-    .collect()
 }
 
 fn op_err(e: OperationError) -> ProviderError {
