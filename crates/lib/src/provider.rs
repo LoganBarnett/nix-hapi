@@ -1,6 +1,7 @@
 use crate::field_value::{FieldValueError, ResolvedFieldValue};
 use crate::meta::NixHapiMeta;
 use crate::plan::{ApplyReport, ProviderPlan};
+use async_trait::async_trait;
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -65,6 +66,7 @@ pub enum ProviderError {
 pub enum Filter {}
 
 /// A provider implements the query-diff-apply loop for one API backend.
+#[async_trait]
 pub trait Provider: Send + Sync {
   /// Unique identifier for this provider type (e.g. `"ldap"`).
   fn provider_type(&self) -> &str;
@@ -76,7 +78,7 @@ pub trait Provider: Send + Sync {
   ///
   /// `filters` is empty in this release; the parameter exists so filter
   /// support can be added without changing the trait signature.
-  fn list_live(
+  async fn list_live(
     &self,
     config: &ResolvedConfig,
     filters: &[Filter],
@@ -87,7 +89,7 @@ pub trait Provider: Send + Sync {
   /// `desired` is the provider's subtree from the Nix-generated JSON, with
   /// the `__nixhapi` key already stripped.  `live` is the value returned by
   /// a prior call to `list_live`.
-  fn plan(
+  async fn plan(
     &self,
     desired: &serde_json::Value,
     live: &serde_json::Value,
@@ -96,7 +98,7 @@ pub trait Provider: Send + Sync {
   ) -> Result<ProviderPlan, ProviderError>;
 
   /// Execute the plan produced by `plan`.
-  fn apply(
+  async fn apply(
     &self,
     plan: &ProviderPlan,
     config: &ResolvedConfig,

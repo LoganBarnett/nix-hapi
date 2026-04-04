@@ -5,8 +5,8 @@ use nix_hapi_lib::subprocess::SubprocessProvider;
 use std::collections::HashMap;
 use std::path::Path;
 
-#[test]
-fn subprocess_smoke() {
+#[tokio::test]
+async fn subprocess_smoke() {
   let binary = env!("CARGO_BIN_EXE_nix-hapi-fake");
   let provider =
     SubprocessProvider::spawn("fake".to_string(), Path::new(binary))
@@ -17,6 +17,7 @@ fn subprocess_smoke() {
 
   let live = provider
     .list_live(&config, &filters)
+    .await
     .expect("list_live failed");
   assert_eq!(live, serde_json::json!({}));
 
@@ -24,10 +25,11 @@ fn subprocess_smoke() {
   let meta = NixHapiMeta::default();
   let plan = provider
     .plan(&desired, &live, &meta, &config)
+    .await
     .expect("plan failed");
   assert_eq!(plan.changes.len(), 1);
   assert!(matches!(plan.changes[0], ResourceChange::Add { .. }));
 
-  let report = provider.apply(&plan, &config).expect("apply failed");
+  let report = provider.apply(&plan, &config).await.expect("apply failed");
   assert_eq!(report.created, vec!["fake-resource".to_string()]);
 }

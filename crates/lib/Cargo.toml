@@ -16,6 +16,8 @@ tap = { workspace = true }  # For method chaining, reduces superfluous locals
 jaq-core = { workspace = true }
 jaq-std = { workspace = true }
 jaq-json = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
 
 [dev-dependencies]
 cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }

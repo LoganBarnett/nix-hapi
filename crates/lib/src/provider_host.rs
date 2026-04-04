@@ -11,8 +11,8 @@ use crate::plan::ProviderPlan;
 use crate::provider::{Provider, ResolvedConfig};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::io::{self, BufRead, Write};
 use thiserror::Error;
+use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 #[derive(Debug, Error)]
 pub enum ProviderHostError {
@@ -28,13 +28,22 @@ pub enum ProviderHostError {
 
 /// Reads JSON-RPC requests from stdin, dispatches to `provider`, and writes
 /// responses to stdout.  Returns when stdin is closed.
-pub fn run<P: Provider>(provider: P) -> Result<(), ProviderHostError> {
+pub async fn run<P: Provider>(provider: P) -> Result<(), ProviderHostError> {
   let stdin = io::stdin();
   let stdout = io::stdout();
-  let mut out = stdout.lock();
+  let mut reader = BufReader::new(stdin);
+  let mut out = stdout;
 
-  for line in stdin.lock().lines() {
-    let line = line.map_err(ProviderHostError::Stdin)?;
+  let mut line = String::new();
+  loop {
+    line.clear();
+    let bytes_read = reader
+      .read_line(&mut line)
+      .await
+      .map_err(ProviderHostError::Stdin)?;
+    if bytes_read == 0 {
+      break;
+    }
     if line.trim().is_empty() {
       continue;
     }
@@ -46,18 +55,25 @@ pub fn run<P: Provider>(provider: P) -> Result<(), ProviderHostError> {
     let method = request["method"].as_str().unwrap_or("").to_string();
     let params = request.get("params").cloned().unwrap_or(Value::Null);
 
-    let response = dispatch(&provider, &method, params, id);
+    let response = dispatch(&provider, &method, params, id).await;
     let response_line = serde_json::to_string(&response)
       .expect("response serialization infallible");
 
-    writeln!(out, "{}", response_line).map_err(ProviderHostError::Stdout)?;
-    out.flush().map_err(ProviderHostError::Stdout)?;
+    out
+      .write_all(response_line.as_bytes())
+      .await
+      .map_err(ProviderHostError::Stdout)?;
+    out
+      .write_all(b"\n")
+      .await
+      .map_err(ProviderHostError::Stdout)?;
+    out.flush().await.map_err(ProviderHostError::Stdout)?;
   }
 
   Ok(())
 }
 
-fn dispatch<P: Provider>(
+async fn dispatch<P: Provider>(
   provider: &P,
   method: &str,
   params: Value,
@@ -69,7 +85,7 @@ fn dispatch<P: Provider>(
         Ok(c) => c,
         Err(e) => return error_response(id, e),
       };
-      match provider.list_live(&config, &[]) {
+      match provider.list_live(&config, &[]).await {
         Ok(result) => success_response(id, result),
         Err(e) => error_response(id, e.to_string()),
       }
@@ -84,7 +100,10 @@ fn dispatch<P: Provider>(
           Ok(m) => m,
           Err(e) => return error_response(id, e.to_string()),
         };
-      match provider.plan(&params["desired"], &params["live"], &meta, &config) {
+      match provider
+        .plan(&params["desired"], &params["live"], &meta, &config)
+        .await
+      {
         Ok(plan) => {
           let plan_value =
             serde_json::to_value(plan).expect("plan serialization infallible");
@@ -103,7 +122,7 @@ fn dispatch<P: Provider>(
           Ok(p) => p,
           Err(e) => return error_response(id, e.to_string()),
         };
-      match provider.apply(&plan, &config) {
+      match provider.apply(&plan, &config).await {
         Ok(report) => {
           let report_value = serde_json::to_value(report)
             .expect("report serialization infallible");

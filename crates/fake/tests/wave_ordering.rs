@@ -40,13 +40,14 @@ fn diamond_dag_json(delay_ms: u64) -> Value {
 }
 
 fn make_resolver(
-  records: &Arc<Mutex<Vec<ApplyRecord>>>,
+  records: Arc<Mutex<Vec<ApplyRecord>>>,
 ) -> impl Fn(
   &str,
   &str,
 ) -> Result<Box<dyn nix_hapi_lib::provider::Provider>, ExecuteError>
+     + Send
      + Sync
-     + '_ {
+     + 'static {
   move |instance: &str, provider_type: &str| match provider_type {
     "fake" => Ok(Box::new(FakeProvider::new(records.clone()))
       as Box<dyn nix_hapi_lib::provider::Provider>),
@@ -73,11 +74,13 @@ fn wave_structure_is_correct() {
   );
 }
 
-#[test]
-fn all_providers_apply() {
+#[tokio::test]
+async fn all_providers_apply() {
   let records: Arc<Mutex<Vec<ApplyRecord>>> = Arc::new(Mutex::new(Vec::new()));
   let root = diamond_dag_json(0);
-  execute_apply_waves(&root, make_resolver(&records)).unwrap();
+  execute_apply_waves(&root, make_resolver(Arc::clone(&records)))
+    .await
+    .unwrap();
 
   let locked = records.lock().unwrap();
   let names: std::collections::HashSet<&str> =
@@ -88,12 +91,14 @@ fn all_providers_apply() {
   assert!(names.contains("d"), "d must have applied");
 }
 
-#[test]
-fn wave1_runs_in_parallel() {
+#[tokio::test]
+async fn wave1_runs_in_parallel() {
   let records: Arc<Mutex<Vec<ApplyRecord>>> = Arc::new(Mutex::new(Vec::new()));
   // 50 ms each; if sequential they would not overlap.
   let root = diamond_dag_json(50);
-  execute_apply_waves(&root, make_resolver(&records)).unwrap();
+  execute_apply_waves(&root, make_resolver(Arc::clone(&records)))
+    .await
+    .unwrap();
 
   let locked = records.lock().unwrap();
   let b = locked
@@ -110,11 +115,13 @@ fn wave1_runs_in_parallel() {
   );
 }
 
-#[test]
-fn wave2_waits_for_wave1() {
+#[tokio::test]
+async fn wave2_waits_for_wave1() {
   let records: Arc<Mutex<Vec<ApplyRecord>>> = Arc::new(Mutex::new(Vec::new()));
   let root = diamond_dag_json(20);
-  execute_apply_waves(&root, make_resolver(&records)).unwrap();
+  execute_apply_waves(&root, make_resolver(Arc::clone(&records)))
+    .await
+    .unwrap();
 
   let locked = records.lock().unwrap();
   let b = locked

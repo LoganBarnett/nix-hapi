@@ -50,7 +50,8 @@ enum Command {
   Apply,
 }
 
-fn main() -> Result<(), ApplicationError> {
+#[tokio::main]
+async fn main() -> Result<(), ApplicationError> {
   let cli = Cli::parse();
   let config = Config::from_cli_and_file(cli.raw).map_err(|e| {
     eprintln!("Configuration error: {}", e);
@@ -63,8 +64,9 @@ fn main() -> Result<(), ApplicationError> {
   std::io::stdin().read_to_string(&mut stdin_json)?;
   let root: serde_json::Value = serde_json::from_str(&stdin_json)?;
 
-  let resolver = |instance: &str, provider_type: &str| {
-    let path = config.providers.get(provider_type).ok_or_else(|| {
+  let providers = config.providers;
+  let resolver = move |instance: &str, provider_type: &str| {
+    let path = providers.get(provider_type).ok_or_else(|| {
       ExecuteError::ProviderLookup {
         instance: instance.to_string(),
         provider_type: provider_type.to_string(),
@@ -79,19 +81,22 @@ fn main() -> Result<(), ApplicationError> {
   };
 
   match cli.command {
-    Command::Plan => run_plan(&root, resolver),
-    Command::Apply => run_apply(&root, resolver),
+    Command::Plan => run_plan(&root, resolver).await,
+    Command::Apply => run_apply(&root, resolver).await,
   }
 }
 
-fn run_plan<F>(
+async fn run_plan<F>(
   root: &serde_json::Value,
   resolver: F,
 ) -> Result<(), ApplicationError>
 where
-  F: Fn(&str, &str) -> Result<Box<dyn Provider>, ExecuteError> + Sync,
+  F: Fn(&str, &str) -> Result<Box<dyn Provider>, ExecuteError>
+    + Send
+    + Sync
+    + 'static,
 {
-  let plan = execute_plan_waves(root, resolver)?;
+  let plan = execute_plan_waves(root, resolver).await?;
 
   if plan.is_empty() {
     println!("No changes.");
@@ -119,14 +124,17 @@ where
   Ok(())
 }
 
-fn run_apply<F>(
+async fn run_apply<F>(
   root: &serde_json::Value,
   resolver: F,
 ) -> Result<(), ApplicationError>
 where
-  F: Fn(&str, &str) -> Result<Box<dyn Provider>, ExecuteError> + Sync,
+  F: Fn(&str, &str) -> Result<Box<dyn Provider>, ExecuteError>
+    + Send
+    + Sync
+    + 'static,
 {
-  let reports = execute_apply_waves(root, resolver)?;
+  let reports = execute_apply_waves(root, resolver).await?;
 
   let any_changes = reports.iter().any(|(_, r)| {
     !r.created.is_empty() || !r.modified.is_empty() || !r.deleted.is_empty()

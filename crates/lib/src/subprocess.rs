@@ -4,13 +4,14 @@
 use crate::meta::NixHapiMeta;
 use crate::plan::{ApplyReport, ProviderPlan};
 use crate::provider::{Filter, Provider, ProviderError, ResolvedConfig};
+use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::Mutex;
 use thiserror::Error;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::sync::Mutex;
 
 #[derive(Debug, Error)]
 pub enum SubprocessError {
@@ -57,6 +58,8 @@ impl SubprocessProvider {
     type_name: String,
     path: &Path,
   ) -> Result<Self, SubprocessError> {
+    use std::process::Stdio;
+
     let mut child = Command::new(path)
       .stdin(Stdio::piped())
       .stdout(Stdio::piped())
@@ -80,12 +83,12 @@ impl SubprocessProvider {
     })
   }
 
-  fn call(
+  async fn call(
     &self,
     method: &str,
     params: Value,
   ) -> Result<Value, SubprocessError> {
-    let mut inner = self.inner.lock().expect("inner mutex poisoned");
+    let mut inner = self.inner.lock().await;
 
     let request = json!({
       "jsonrpc": "2.0",
@@ -97,17 +100,27 @@ impl SubprocessProvider {
     let request_line = serde_json::to_string(&request)
       .expect("request serialization infallible");
 
-    writeln!(inner.stdin, "{}", request_line)
+    inner
+      .stdin
+      .write_all(request_line.as_bytes())
+      .await
+      .map_err(|source| SubprocessError::Communication { source })?;
+    inner
+      .stdin
+      .write_all(b"\n")
+      .await
       .map_err(|source| SubprocessError::Communication { source })?;
     inner
       .stdin
       .flush()
+      .await
       .map_err(|source| SubprocessError::Communication { source })?;
 
     let mut response_line = String::new();
     inner
       .stdout
       .read_line(&mut response_line)
+      .await
       .map_err(|source| SubprocessError::Communication { source })?;
 
     if response_line.trim_end().is_empty() {
@@ -134,11 +147,9 @@ impl SubprocessProvider {
 
 impl Drop for SubprocessProvider {
   fn drop(&mut self) {
-    if let Ok(inner) = self.inner.get_mut() {
-      // Kill rather than wait for graceful EOF so Drop is not blocking.
-      let _ = inner.child.kill();
-      let _ = inner.child.wait();
-    }
+    // start_kill is non-blocking (sends kill signal without waiting).
+    let inner = self.inner.get_mut();
+    let _ = inner.child.start_kill();
   }
 }
 
@@ -170,6 +181,7 @@ fn to_wire_config(
     .collect()
 }
 
+#[async_trait]
 impl Provider for SubprocessProvider {
   fn provider_type(&self) -> &str {
     &self.type_name
@@ -181,7 +193,7 @@ impl Provider for SubprocessProvider {
     &[]
   }
 
-  fn list_live(
+  async fn list_live(
     &self,
     config: &ResolvedConfig,
     _filters: &[Filter],
@@ -190,10 +202,11 @@ impl Provider for SubprocessProvider {
       .map_err(|e| ProviderError::OperationFailed(e.to_string()))?;
     self
       .call("list_live", json!({ "config": wire, "filters": [] }))
+      .await
       .map_err(|e| ProviderError::OperationFailed(e.to_string()))
   }
 
-  fn plan(
+  async fn plan(
     &self,
     desired: &Value,
     live: &Value,
@@ -212,13 +225,14 @@ impl Provider for SubprocessProvider {
           "config": wire,
         }),
       )
+      .await
       .map_err(|e| ProviderError::OperationFailed(e.to_string()))?;
 
     serde_json::from_value(result)
       .map_err(|e| ProviderError::DesiredStateParse(e.to_string()))
   }
 
-  fn apply(
+  async fn apply(
     &self,
     plan: &ProviderPlan,
     config: &ResolvedConfig,
@@ -227,6 +241,7 @@ impl Provider for SubprocessProvider {
       .map_err(|e| ProviderError::OperationFailed(e.to_string()))?;
     let result = self
       .call("apply", json!({ "plan": plan, "config": wire }))
+      .await
       .map_err(|e| ProviderError::OperationFailed(e.to_string()))?;
 
     serde_json::from_value(result)

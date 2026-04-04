@@ -6,6 +6,7 @@
 //! duration, and records timing information to a shared list so callers can
 //! assert on overlap and sequencing.
 
+use async_trait::async_trait;
 use nix_hapi_lib::meta::NixHapiMeta;
 use nix_hapi_lib::plan::{
   ApplyReport, FieldDiff, ProviderPlan, ResourceChange, RunbookStep,
@@ -80,6 +81,7 @@ impl FakeProvider {
   }
 }
 
+#[async_trait]
 impl Provider for FakeProvider {
   fn provider_type(&self) -> &str {
     "fake"
@@ -89,7 +91,7 @@ impl Provider for FakeProvider {
     &[]
   }
 
-  fn list_live(
+  async fn list_live(
     &self,
     _config: &ResolvedConfig,
     _filters: &[Filter],
@@ -97,7 +99,7 @@ impl Provider for FakeProvider {
     Ok(self.live_state.clone())
   }
 
-  fn plan(
+  async fn plan(
     &self,
     desired: &serde_json::Value,
     _live: &serde_json::Value,
@@ -125,7 +127,7 @@ impl Provider for FakeProvider {
     })
   }
 
-  fn apply(
+  async fn apply(
     &self,
     plan: &ProviderPlan,
     config: &ResolvedConfig,
@@ -137,7 +139,7 @@ impl Provider for FakeProvider {
       .unwrap_or(0);
 
     let started_at = Instant::now();
-    std::thread::sleep(Duration::from_millis(delay_ms));
+    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
     let finished_at = Instant::now();
 
     self.records.lock().unwrap().push(ApplyRecord {

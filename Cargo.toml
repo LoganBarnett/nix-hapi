@@ -37,7 +37,8 @@ thiserror = "2.0"
 
 # HTTP client for provider API calls
 reqwest = { version = "0.12", features = ["json"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "process", "sync", "time"] }
+async-trait = "0.1"
 
 # jq expression evaluation for dependsOn DAG resolution
 jaq-core = "2"

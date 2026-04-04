@@ -4,7 +4,8 @@
 //! tests and alternative front-ends can drive reconciliation without going
 //! through the binary.  The caller supplies a `resolve_provider` closure that
 //! maps a provider type string to a boxed [`Provider`]; the executor handles
-//! DAG-wave scheduling, config resolution, live-state fetching, and threading.
+//! DAG-wave scheduling, config resolution, live-state fetching, and async
+//! task parallelism.
 
 use crate::dag::{execution_waves, DagError};
 use crate::derived::{resolve_derived_from_tree, DerivedFromError};
@@ -15,6 +16,7 @@ use crate::provider::{
 };
 use crate::saturation::{check_derived_from_saturation, SaturationError};
 use serde_json::Value;
+use std::sync::Arc;
 use thiserror::Error;
 
 // ── Errors ────────────────────────────────────────────────────────────────────
@@ -114,7 +116,7 @@ fn split_scope(
 ///
 /// Returns the plan together with the provider and resolved config so that
 /// `execute_apply_waves` can call `apply` immediately without re-resolving.
-fn plan_instance_inner<F>(
+async fn plan_instance_inner<F>(
   instance_name: &str,
   root: &Value,
   resolve_fn: &F,
@@ -147,7 +149,7 @@ where
 
   let provider = resolve_fn(instance_name, &spec.provider_type)?;
 
-  let live = provider.list_live(&config, &[]).map_err(|source| {
+  let live = provider.list_live(&config, &[]).await.map_err(|source| {
     ExecuteError::ProviderOperation {
       instance: instance_name.to_string(),
       source,
@@ -157,6 +159,7 @@ where
   let mut pp =
     provider
       .plan(&data, &live, &meta, &config)
+      .await
       .map_err(|source| ExecuteError::ProviderOperation {
         instance: instance_name.to_string(),
         source,
@@ -169,38 +172,40 @@ where
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Plans all provider instances across DAG waves, running each wave in
-/// parallel.
+/// parallel via tokio tasks.
 ///
 /// Provider plans in the returned [`Plan`] are stored in topological order
 /// (wave 0 first), preserving correct sequencing for runbook display.
-pub fn execute_plan_waves<F>(
+pub async fn execute_plan_waves<F>(
   root: &Value,
   resolve_provider: F,
 ) -> Result<Plan, ExecuteError>
 where
-  F: Fn(&str, &str) -> Result<Box<dyn Provider>, ExecuteError> + Sync,
+  F: Fn(&str, &str) -> Result<Box<dyn Provider>, ExecuteError>
+    + Send
+    + Sync
+    + 'static,
 {
   let mut plan = Plan::default();
   let waves = execution_waves(root)?;
   check_derived_from_saturation(root, &waves)?;
 
+  let resolve_provider = Arc::new(resolve_provider);
+
   for wave in &waves {
-    let wave_results: Vec<Result<ProviderPlan, ExecuteError>> =
-      std::thread::scope(|scope| {
-        wave
-          .iter()
-          .map(|name| {
-            scope.spawn(|| {
-              plan_instance_inner(name.as_str(), root, &resolve_provider)
-                .map(|(pp, _, _)| pp)
-            })
-          })
-          .collect::<Vec<_>>()
-          .into_iter()
-          .map(|h| h.join().expect("provider planning thread panicked"))
-          .collect()
-      });
-    for result in wave_results {
+    let mut handles = Vec::new();
+    for name in wave {
+      let name = name.clone();
+      let root_clone = root.clone();
+      let resolve_fn = Arc::clone(&resolve_provider);
+      handles.push(tokio::spawn(async move {
+        plan_instance_inner(&name, &root_clone, &*resolve_fn)
+          .await
+          .map(|(pp, _, _)| pp)
+      }));
+    }
+    for handle in handles {
+      let result = handle.await.expect("provider planning task panicked");
       plan.provider_plans.push(result?);
     }
   }
@@ -209,17 +214,20 @@ where
 }
 
 /// Plans and applies all provider instances across DAG waves, running each
-/// wave in parallel.
+/// wave in parallel via tokio tasks.
 ///
 /// All instances in wave N complete before any instance in wave N+1 begins.
 /// Between waves, any `DerivedFrom` fields whose inputs are now available in
 /// the crystalized live-state tree are resolved before the next wave plans.
-pub fn execute_apply_waves<F>(
+pub async fn execute_apply_waves<F>(
   root: &Value,
   resolve_provider: F,
 ) -> Result<Vec<(String, ApplyReport)>, ExecuteError>
 where
-  F: Fn(&str, &str) -> Result<Box<dyn Provider>, ExecuteError> + Sync,
+  F: Fn(&str, &str) -> Result<Box<dyn Provider>, ExecuteError>
+    + Send
+    + Sync
+    + 'static,
 {
   let waves = execution_waves(root)?;
   check_derived_from_saturation(root, &waves)?;
@@ -229,57 +237,42 @@ where
   // Active desired-state tree, updated between waves as DerivedFrom fields resolve.
   let mut active_root = root.clone();
 
+  let resolve_provider = Arc::new(resolve_provider);
+
   for wave in &waves {
     active_root = resolve_derived_from_tree(&active_root, &crystalized)?;
 
-    // wave_results carries the provider and config forward so list_live can
-    // be called after apply to populate the crystalized tree.
-    let wave_results: Vec<
-      Result<
-        (String, ApplyReport, Box<dyn Provider>, ResolvedConfig),
-        ExecuteError,
-      >,
-    > = std::thread::scope(|scope| {
-      wave
-        .iter()
-        .map(|name| {
-          scope.spawn(|| {
-            let (pp, provider, config) = plan_instance_inner(
-              name.as_str(),
-              &active_root,
-              &resolve_provider,
-            )?;
-            if pp.is_empty() {
-              return Ok((
-                name.to_string(),
-                ApplyReport::default(),
-                provider,
-                config,
-              ));
-            }
-            provider
-              .apply(&pp, &config)
-              .map_err(|source| ExecuteError::ProviderOperation {
-                instance: name.to_string(),
-                source,
-              })
-              .map(|report| (name.to_string(), report, provider, config))
+    let mut handles = Vec::new();
+    for name in wave {
+      let name = name.clone();
+      let root_clone = active_root.clone();
+      let resolve_fn = Arc::clone(&resolve_provider);
+      handles.push(tokio::spawn(async move {
+        let (pp, provider, config) =
+          plan_instance_inner(&name, &root_clone, &*resolve_fn).await?;
+        if pp.is_empty() {
+          return Ok((name, ApplyReport::default(), provider, config));
+        }
+        provider
+          .apply(&pp, &config)
+          .await
+          .map_err(|source| ExecuteError::ProviderOperation {
+            instance: name.clone(),
+            source,
           })
-        })
-        .collect::<Vec<_>>()
-        .into_iter()
-        .map(|h| h.join().expect("provider apply thread panicked"))
-        .collect()
-    });
+          .map(|report| (name, report, provider, config))
+      }));
+    }
 
     let mut wave_errors: Vec<ExecuteError> = Vec::new();
     let mut wave_successes: Vec<(String, ApplyReport)> = Vec::new();
-    for result in wave_results {
+    for handle in handles {
+      let result = handle.await.expect("provider apply task panicked");
       match result {
         Ok((name, report, provider, config)) => {
           // Capture post-apply live state so subsequent waves can resolve
           // their DerivedFrom inputs.
-          match provider.list_live(&config, &[]) {
+          match provider.list_live(&config, &[]).await {
             Ok(live) => {
               crystalized[&name] = live;
               wave_successes.push((name, report));
@@ -325,6 +318,7 @@ mod tests {
     ApplyReport, FieldDiff, ProviderPlan, ResourceChange, RunbookStep,
   };
   use crate::provider::{Filter, Provider, ProviderError, ResolvedConfig};
+  use async_trait::async_trait;
   use serde_json::json;
   use std::collections::HashMap;
   use std::sync::{Arc, Mutex};
@@ -366,6 +360,7 @@ mod tests {
     }
   }
 
+  #[async_trait]
   impl Provider for TestProvider {
     fn provider_type(&self) -> &str {
       "test"
@@ -375,7 +370,7 @@ mod tests {
       &[]
     }
 
-    fn list_live(
+    async fn list_live(
       &self,
       _config: &ResolvedConfig,
       _filters: &[Filter],
@@ -383,7 +378,7 @@ mod tests {
       Ok(self.live_state.clone())
     }
 
-    fn plan(
+    async fn plan(
       &self,
       _desired: &Value,
       _live: &Value,
@@ -415,7 +410,7 @@ mod tests {
       })
     }
 
-    fn apply(
+    async fn apply(
       &self,
       plan: &ProviderPlan,
       _config: &ResolvedConfig,
@@ -458,7 +453,10 @@ mod tests {
 
   fn make_resolver(
     providers: HashMap<String, TestProvider>,
-  ) -> impl Fn(&str, &str) -> Result<Box<dyn Provider>, ExecuteError> + Sync {
+  ) -> impl Fn(&str, &str) -> Result<Box<dyn Provider>, ExecuteError>
+       + Send
+       + Sync
+       + 'static {
     let providers = Arc::new(Mutex::new(providers));
     move |instance_name: &str, _type_name: &str| {
       let map = providers.lock().unwrap();
@@ -481,21 +479,23 @@ mod tests {
     }
   }
 
-  #[test]
-  fn plan_single_instance_produces_changes() {
+  #[tokio::test]
+  async fn plan_single_instance_produces_changes() {
     let root = json!({"alpha": scope()});
     let providers: HashMap<String, TestProvider> =
       [("alpha".to_string(), TestProvider::ok(json!({})))]
         .into_iter()
         .collect();
-    let plan = execute_plan_waves(&root, make_resolver(providers)).unwrap();
+    let plan = execute_plan_waves(&root, make_resolver(providers))
+      .await
+      .unwrap();
     assert_eq!(plan.provider_plans.len(), 1);
     assert_eq!(plan.provider_plans[0].instance_name, "alpha");
     assert!(!plan.provider_plans[0].is_empty());
   }
 
-  #[test]
-  fn apply_single_instance_returns_report() {
+  #[tokio::test]
+  async fn apply_single_instance_returns_report() {
     let root = json!({"alpha": scope()});
     let apply_called = Arc::new(Mutex::new(Vec::new()));
     let providers: HashMap<String, TestProvider> = [(
@@ -509,7 +509,9 @@ mod tests {
     )]
     .into_iter()
     .collect();
-    let reports = execute_apply_waves(&root, make_resolver(providers)).unwrap();
+    let reports = execute_apply_waves(&root, make_resolver(providers))
+      .await
+      .unwrap();
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].0, "alpha");
     assert_eq!(reports[0].1.created, vec!["r".to_string()]);
@@ -517,8 +519,8 @@ mod tests {
     assert_eq!(*called, vec!["alpha"]);
   }
 
-  #[test]
-  fn diamond_dag_respects_wave_ordering() {
+  #[tokio::test]
+  async fn diamond_dag_respects_wave_ordering() {
     // a → {b, c} → d
     let root = json!({
       "a": scope(),
@@ -546,7 +548,9 @@ mod tests {
         )
       })
       .collect();
-    let reports = execute_apply_waves(&root, make_resolver(providers)).unwrap();
+    let reports = execute_apply_waves(&root, make_resolver(providers))
+      .await
+      .unwrap();
     assert_eq!(reports.len(), 4);
 
     let called = apply_called.lock().unwrap();
@@ -558,8 +562,8 @@ mod tests {
     assert!(pos("c") < pos("d"));
   }
 
-  #[test]
-  fn missing_provider_declaration_returns_error() {
+  #[tokio::test]
+  async fn missing_provider_declaration_returns_error() {
     // Scope without __nixhapi.provider.
     let root = json!({
       "alpha": { "__nixhapi": {} }
@@ -568,44 +572,50 @@ mod tests {
       [("alpha".to_string(), TestProvider::ok(json!({})))]
         .into_iter()
         .collect();
-    let err = execute_plan_waves(&root, make_resolver(providers)).unwrap_err();
+    let err = execute_plan_waves(&root, make_resolver(providers))
+      .await
+      .unwrap_err();
     assert!(
       matches!(err, ExecuteError::MissingProvider { .. }),
       "expected MissingProvider, got {err:?}"
     );
   }
 
-  #[test]
-  fn provider_plan_error_propagated() {
+  #[tokio::test]
+  async fn provider_plan_error_propagated() {
     let root = json!({"alpha": scope()});
     let providers: HashMap<String, TestProvider> =
       [("alpha".to_string(), TestProvider::failing_plan())]
         .into_iter()
         .collect();
-    let err = execute_plan_waves(&root, make_resolver(providers)).unwrap_err();
+    let err = execute_plan_waves(&root, make_resolver(providers))
+      .await
+      .unwrap_err();
     assert!(
       matches!(err, ExecuteError::ProviderOperation { .. }),
       "expected ProviderOperation, got {err:?}"
     );
   }
 
-  #[test]
-  fn provider_apply_error_propagated() {
+  #[tokio::test]
+  async fn provider_apply_error_propagated() {
     let root = json!({"alpha": scope()});
     let apply_called = Arc::new(Mutex::new(Vec::new()));
     let providers: HashMap<String, TestProvider> =
       [("alpha".to_string(), TestProvider::failing_apply(apply_called))]
         .into_iter()
         .collect();
-    let err = execute_apply_waves(&root, make_resolver(providers)).unwrap_err();
+    let err = execute_apply_waves(&root, make_resolver(providers))
+      .await
+      .unwrap_err();
     assert!(
       matches!(err, ExecuteError::PartialWaveFailure { .. }),
       "expected PartialWaveFailure, got {err:?}"
     );
   }
 
-  #[test]
-  fn malformed_metadata_returns_error() {
+  #[tokio::test]
+  async fn malformed_metadata_returns_error() {
     // __nixhapi has an invalid shape: provider should be an object, not a
     // number.  The DAG walker encounters this first during execution_waves.
     let root = json!({
@@ -617,7 +627,9 @@ mod tests {
       [("alpha".to_string(), TestProvider::ok(json!({})))]
         .into_iter()
         .collect();
-    let err = execute_plan_waves(&root, make_resolver(providers)).unwrap_err();
+    let err = execute_plan_waves(&root, make_resolver(providers))
+      .await
+      .unwrap_err();
     assert!(
       matches!(
         err,

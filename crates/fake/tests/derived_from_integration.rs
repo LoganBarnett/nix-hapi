@@ -7,23 +7,24 @@ use std::sync::{Arc, Mutex};
 
 /// Resolver that creates FakeProviders with per-instance live states and
 /// optional plan-snapshot recorders.
-fn make_resolver<'a>(
-  records: &'a Arc<Mutex<Vec<ApplyRecord>>>,
+fn make_resolver(
+  records: Arc<Mutex<Vec<ApplyRecord>>>,
   live_states: std::collections::HashMap<&'static str, Value>,
   snapshot_map: std::collections::HashMap<&'static str, Arc<Mutex<Vec<Value>>>>,
 ) -> impl Fn(
   &str,
   &str,
 ) -> Result<Box<dyn nix_hapi_lib::provider::Provider>, ExecuteError>
+     + Send
      + Sync
-     + 'a {
+     + 'static {
   move |instance: &str, provider_type: &str| match provider_type {
     "fake" => {
       let live = live_states
         .get(instance)
         .cloned()
         .unwrap_or_else(|| json!({}));
-      let mut p = FakeProvider::with_live_state(Arc::clone(records), live);
+      let mut p = FakeProvider::with_live_state(Arc::clone(&records), live);
       if let Some(snap) = snapshot_map.get(instance) {
         p = p.with_plan_snapshots(Arc::clone(snap));
       }
@@ -45,8 +46,8 @@ fn make_resolver<'a>(
 /// wave 0: a  (list_live returns {"user_id": "uid-42"})
 /// wave 1: b  (DerivedFrom reads .["a"].user_id → resolved to "uid-42")
 /// ```
-#[test]
-fn single_hop_derived_from_resolved_before_wave1() {
+#[tokio::test]
+async fn single_hop_derived_from_resolved_before_wave1() {
   let records: Arc<Mutex<Vec<ApplyRecord>>> = Arc::new(Mutex::new(Vec::new()));
   let b_snapshots: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
 
@@ -76,8 +77,9 @@ fn single_hop_derived_from_resolved_before_wave1() {
 
   execute_apply_waves(
     &root,
-    make_resolver(&records, live_states, snapshot_map),
+    make_resolver(Arc::clone(&records), live_states, snapshot_map),
   )
+  .await
   .expect("execute_apply_waves should succeed");
 
   let snaps = b_snapshots.lock().unwrap();
@@ -104,8 +106,8 @@ fn single_hop_derived_from_resolved_before_wave1() {
 /// wave 1: b  (DerivedFrom reads a's id; live: {"id": "b-2"})
 /// wave 2: c  (DerivedFrom reads b's id)
 /// ```
-#[test]
-fn chained_derived_from_resolved_across_waves() {
+#[tokio::test]
+async fn chained_derived_from_resolved_across_waves() {
   let records: Arc<Mutex<Vec<ApplyRecord>>> = Arc::new(Mutex::new(Vec::new()));
   let c_snapshots: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
 
@@ -148,8 +150,9 @@ fn chained_derived_from_resolved_across_waves() {
 
   execute_apply_waves(
     &root,
-    make_resolver(&records, live_states, snapshot_map),
+    make_resolver(Arc::clone(&records), live_states, snapshot_map),
   )
+  .await
   .expect("chained derivedFrom should succeed");
 
   let snaps = c_snapshots.lock().unwrap();
@@ -168,8 +171,8 @@ fn chained_derived_from_resolved_across_waves() {
 ///         c  (DerivedFrom reads a.uid; live: {"dept": "rd"})
 /// wave 2: d  (DerivedFrom reads b.team and c.dept)
 /// ```
-#[test]
-fn diamond_derived_from_resolved_across_waves() {
+#[tokio::test]
+async fn diamond_derived_from_resolved_across_waves() {
   let records: Arc<Mutex<Vec<ApplyRecord>>> = Arc::new(Mutex::new(Vec::new()));
   let d_snapshots: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
 
@@ -229,8 +232,9 @@ fn diamond_derived_from_resolved_across_waves() {
 
   execute_apply_waves(
     &root,
-    make_resolver(&records, live_states, snapshot_map),
+    make_resolver(Arc::clone(&records), live_states, snapshot_map),
   )
+  .await
   .expect("diamond derivedFrom should succeed");
 
   let snaps = d_snapshots.lock().unwrap();
