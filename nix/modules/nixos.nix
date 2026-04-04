@@ -92,7 +92,12 @@ in {
     services.nix-hapi.jsonFiles =
       lib.mapAttrs (name: tree: treeJson name tree) cfg.trees;
 
-    # Oneshot service per tree.
+    # Oneshot service per tree.  Services are not pulled in by
+    # multi-user.target — they run on activation (via downstream
+    # restartTriggers) rather than on every boot.  The external state they
+    # reconcile (DNS records, LDAP entries, etc.) persists across reboots, so
+    # re-running on boot is unnecessary and risks failures when network
+    # services are not yet reachable.  Scheduled trees use timers instead.
     systemd.services = lib.mapAttrs' (name: tree:
       lib.nameValuePair "nix-hapi-${name}" {
         description = "nix-hapi reconciler: ${name}";
@@ -103,10 +108,6 @@ in {
           ExecStart = "${cfg.package}/bin/nix-hapi ${providerFlags tree.providers} apply";
           StandardInput = "file:${treeJson name tree}";
         };
-        wantedBy =
-          if tree.schedule == null
-          then ["multi-user.target"]
-          else [];
       })
     cfg.trees;
 
