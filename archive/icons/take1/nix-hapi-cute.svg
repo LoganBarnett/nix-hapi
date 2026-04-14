@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <defs>
+    <polygon id="bar-a" points="-37.9,-36.4 -10.4,-84 0,-54 -17.1,-24.4"/>
+    <polygon id="bar-b" points="10.4,-84 37.9,-36.4 17.1,-24.4 0,-54"/>
+  </defs>
+  <g transform="translate(100,100)">
+    <!-- Snowflake: right bars first (underneath at junctions) -->
+    <use href="#bar-b" fill="#5277C3" transform="rotate(0)"/>
+    <use href="#bar-b" fill="#7EBAE4" transform="rotate(60)"/>
+    <use href="#bar-b" fill="#5277C3" transform="rotate(120)"/>
+    <use href="#bar-b" fill="#7EBAE4" transform="rotate(180)"/>
+    <use href="#bar-b" fill="#5277C3" transform="rotate(240)"/>
+    <use href="#bar-b" fill="#7EBAE4" transform="rotate(300)"/>
+    <!-- Snowflake: left bars second (on top at junctions) -->
+    <use href="#bar-a" fill="#5277C3" transform="rotate(0)"/>
+    <use href="#bar-a" fill="#7EBAE4" transform="rotate(60)"/>
+    <use href="#bar-a" fill="#5277C3" transform="rotate(120)"/>
+    <use href="#bar-a" fill="#7EBAE4" transform="rotate(180)"/>
+    <use href="#bar-a" fill="#5277C3" transform="rotate(240)"/>
+    <use href="#bar-a" fill="#7EBAE4" transform="rotate(300)"/>
+    <!-- Face: kawaii/cute -->
+    <circle cx="0" cy="0" r="28" fill="white" opacity="0.9"/>
+    <!-- Left eye (big with highlights) -->
+    <ellipse cx="-9" cy="-5" rx="6" ry="7" fill="#333"/>
+    <circle cx="-6" cy="-8" r="2.5" fill="white"/>
+    <circle cx="-5" cy="-5.5" r="1.2" fill="white"/>
+    <!-- Right eye (big with highlights) -->
+    <ellipse cx="9" cy="-5" rx="6" ry="7" fill="#333"/>
+    <circle cx="12" cy="-8" r="2.5" fill="white"/>
+    <circle cx="13" cy="-5.5" r="1.2" fill="white"/>
+    <!-- Blush -->
+    <circle cx="-18" cy="5" r="5" fill="#FFB6C1" opacity="0.6"/>
+    <circle cx="18" cy="5" r="5" fill="#FFB6C1" opacity="0.6"/>
+    <!-- Cat mouth -->
+    <path d="M -5,10 Q -2.5,14 0,10 Q 2.5,14 5,10" fill="none" stroke="#333" stroke-width="2" stroke-linecap="round"/>
+  </g>
+</svg>

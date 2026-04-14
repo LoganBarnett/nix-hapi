@@ -4,6 +4,8 @@
 #+date:      <2026-03-27 Thu>
 #+language:  en
 
+[[file:assets/nix-hapi-icon-01.svg]]
+
 * Introduction
 
 nix-hapi ("Nix happy API") is a declarative reconciler for external service

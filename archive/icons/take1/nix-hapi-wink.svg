@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <defs>
+    <polygon id="bar-a" points="-37.9,-36.4 -10.4,-84 0,-54 -17.1,-24.4"/>
+    <polygon id="bar-b" points="10.4,-84 37.9,-36.4 17.1,-24.4 0,-54"/>
+  </defs>
+  <g transform="translate(100,100)">
+    <!-- Snowflake: right bars first (underneath at junctions) -->
+    <use href="#bar-b" fill="#5277C3" transform="rotate(0)"/>
+    <use href="#bar-b" fill="#7EBAE4" transform="rotate(60)"/>
+    <use href="#bar-b" fill="#5277C3" transform="rotate(120)"/>
+    <use href="#bar-b" fill="#7EBAE4" transform="rotate(180)"/>
+    <use href="#bar-b" fill="#5277C3" transform="rotate(240)"/>
+    <use href="#bar-b" fill="#7EBAE4" transform="rotate(300)"/>
+    <!-- Snowflake: left bars second (on top at junctions) -->
+    <use href="#bar-a" fill="#5277C3" transform="rotate(0)"/>
+    <use href="#bar-a" fill="#7EBAE4" transform="rotate(60)"/>
+    <use href="#bar-a" fill="#5277C3" transform="rotate(120)"/>
+    <use href="#bar-a" fill="#7EBAE4" transform="rotate(180)"/>
+    <use href="#bar-a" fill="#5277C3" transform="rotate(240)"/>
+    <use href="#bar-a" fill="#7EBAE4" transform="rotate(300)"/>
+    <!-- Face: winking with tongue -->
+    <circle cx="0" cy="0" r="28" fill="white" opacity="0.9"/>
+    <!-- Left eye (open) -->
+    <circle cx="-10" cy="-6" r="4.5" fill="#333"/>
+    <circle cx="-8.5" cy="-8" r="1.5" fill="white"/>
+    <!-- Right eye (winking) -->
+    <path d="M 5,-6 Q 10,-2 15,-6" fill="none" stroke="#333" stroke-width="2.5" stroke-linecap="round"/>
+    <!-- Smile -->
+    <path d="M -12,5 Q 0,16 12,5" fill="none" stroke="#333" stroke-width="2.5" stroke-linecap="round"/>
+    <!-- Tongue -->
+    <ellipse cx="6" cy="14" rx="5" ry="7" fill="#E57373" stroke="#333" stroke-width="1.5"/>
+  </g>
+</svg>
